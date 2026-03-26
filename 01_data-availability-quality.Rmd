@@ -1,0 +1,3412 @@
+---
+title: "Availability and Quality of anthropometric data in SwissPedGrowth"
+author: "Lorenz Leuenberger"
+output: html_document
+date: "2026-03-23"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+This script is to describe the availability and quality of anthropometric data from hospitals participating in the SwissPedGrowth project.
+
+# Set up
+
+## Software
+
+
+```{r}
+
+library(here)
+library(tidyverse)
+library(gtsummary)
+library(DataExplorer)
+library(plotly)
+library(ggsankeyfier)
+library(cowplot)
+library(confintr)
+library(survey)
+library(srvyr)
+
+```
+
+Functions to calculate z-scores
+
+```{r}
+
+# function for correct rounding
+round2 = function(x, digits=0) {
+  posneg = sign(x)
+  z = abs(x)*10^digits
+  z = z + 0.5 + sqrt(.Machine$double.eps)
+  z = trunc(z)
+  z = z/10^digits
+  z*posneg
+}
+
+# function to calculate corrected z-scores as described by the WHO. See computation_who.pdf -----
+
+z_score_calc_corr = function(L,M,S,parameter){
+  if(is.na(L)|is.na(M)|is.na(S)|is.na(parameter)|parameter<=0){
+    return(NA)
+  }
+  z_score = ((parameter/M)^L-1)/(S*L)
+  if (z_score > 3){
+    SD3pos = M*(1+S*L*3)^(1/L)
+    SD2pos = M*(1+S*L*2)^(1/L)
+    SD23pos = SD3pos - SD2pos
+    z_score = 3+((parameter-SD3pos)/SD23pos)
+    return(z_score)
+  } else if (z_score < -3){
+    SD3neg = M*(1+S*L*(-3))^(1/L)
+    SD2neg = M*(1+S*L*(-2))^(1/L)
+    SD23neg = SD2neg - SD3neg
+    z_score = -3+((parameter-SD3neg)/SD23neg)
+    return(z_score)
+  } else{
+    return(z_score)
+  }
+}
+
+```
+
+## Import data
+
+
+```{r}
+
+# administrative
+load(file = here("data","processed", "SwissPedGrowth_included", "data_participant.RData"))
+load(file = here("data", "processed", "SwissPedGrowth_included", "data_case.RData"))
+load(file = here("data", "processed", "SwissPedGrowth_included", "data_visit_week.RData"))
+load(file = here("data", "processed", "SwissPedGrowth_included", "data_encounter.RData"))
+
+data_participant <- data_participant_included
+data_case <- data_case_included
+data_visit_week <- data_visit_week_included
+data_encounter <- data_encounter_included
+
+rm(data_participant_included, data_case_included, data_visit_week_included, data_encounter_included)
+
+# clinical
+load(file = here("data","processed", "SwissPedGrowth_included", "data_diagnoses.RData"))
+
+data_diagnoses <- data_diagnoses_included
+
+rm(data_diagnoses_included)
+
+# anthropometrics
+load(file = here("data","processed", "SwissPedGrowth_included", "data_height_original.RData"))
+load(file = here("data","processed", "SwissPedGrowth_included", "data_weight_original.RData"))
+load(file = here("data","processed", "SwissPedGrowth_included", "data_height_clean.RData"))
+load(file = here("data","processed", "SwissPedGrowth_included", "data_weight_clean.RData"))
+load(file = here("data","processed", "SwissPedGrowth_included", "data_bmi.RData"))
+load(file = here("data","processed", "SwissPedGrowth_included", "data_head.RData"))
+
+data_height_original <- data_height_original_included
+data_weight_original <- data_weight_original_included
+data_height_clean <- data_height_clean_included
+data_weight_clean <- data_weight_clean_included
+data_bmi <- data_bmi_included
+data_head <- data_head_included
+
+rm(data_height_original_included, data_weight_original_included, data_height_clean_included, data_weight_clean_included, data_bmi_included, data_head_included)
+
+# growth references
+
+interpolated_braegger_height <- read.csv(here("data", "raw", "Interpolated-growth-references", "interpolated_braegger_height.csv"))
+interpolated_braegger_weight <- read.csv(here("data", "raw", "Interpolated-growth-references", "interpolated_braegger_weight.csv"))
+interpolated_braegger_bmi <- read.csv(here("data", "raw", "Interpolated-growth-references", "interpolated_braegger_bmi.csv"))
+braegger_length <- read.csv(here("data", "raw", "Interpolated-growth-references", "braegger_length.csv"))
+interpolated_braegger_head_circumference <- read.csv(here("data", "raw", "Interpolated-growth-references", "interpolated_braegger_head_circumference.csv"))
+
+
+# general population
+
+Genpop_summary_statistics_2017 <- read.csv(here("data", "raw", "General_population", "Summary_statistics_2017.csv"))
+Genpop_summary_statistics_2023 <- read.csv(here("data", "raw", "General_population", "Summary_statistics_2023.csv"))
+```
+
+
+# Inclusion criteria for analysis
+
+
+The SwissPedGrowth inclusion criteria are already applied:
+
+Include participants who
+- visited a hospital between 25.12.2016 and 07.01.2024 (adapted period for date shifts) based on Administrative Case AND
+- were between 0 to 20 years old at visit based on Administrative Case admission
+
+Exclude participants
+- with refused GC
+- missing birth date
+
+Include data collected between 25.12.2016 and 07.01.2024 (adapted period for date shifts).
+
+
+Analysis inclusion criteria
+Include SwissPedGrowth participants
+
+Exclude participants and visits (and their data)
+- with missing sex or missing type of visit
+
+
+Visits
+
+```{r}
+# visits
+
+data_visit_week <- data_visit_week |> 
+  mutate(analysis_inclusion_visit_week = factor(case_when(is.na(sex) ~ "Exclude - missing sex",
+                                        is.na(visit_week_type) ~ "Exclude - missing information on visit",
+                                        TRUE ~ "Include"),
+                                     levels = c("Include", "Exclude - missing sex", "Exclude - missing information on visit")))
+
+data_visit_week |> select(analysis_inclusion_visit_week) |> tbl_summary()
+
+
+```
+
+Participant
+
+```{r}
+
+data_participant <- data_participant |> 
+  left_join(data_visit_week |> group_by(participant_id) |> arrange(analysis_inclusion_visit_week) |> slice(1) |> ungroup() |> select(analysis_inclusion_visit_week, participant_id), by = "participant_id")
+
+
+data_participant <- data_participant |> 
+  mutate(analysis_inclusion_participant = factor(case_when(is.na(sex) ~ "Exclude - missing sex",
+                                               analysis_inclusion_visit_week == "Exclude - missing information on visit" ~ "Exclude - missing information on visit",
+                                               is.na(analysis_inclusion_visit_week) ~ "Exclude - missing information on visit",
+                                               TRUE ~ "Include"),
+                                     levels = c("Include", "Exclude - missing sex", "Exclude - missing information on visit")))
+  
+
+
+data_participant |> 
+  select(analysis_inclusion_participant) |> 
+  tbl_summary()
+
+```
+
+Other data
+
+```{r}
+
+# administrative
+data_case <- data_case |> 
+  left_join(data_participant |> select(participant_id, analysis_inclusion_participant), by = "participant_id") |> 
+  left_join(data_visit_week |> group_by(case_id) |> arrange(analysis_inclusion_visit_week) |> slice(1) |> select(case_id, analysis_inclusion_visit_week), by = "case_id")
+
+data_case |> 
+  select(analysis_inclusion_participant, analysis_inclusion_visit_week) |> 
+  tbl_summary()
+
+
+data_encounter <- data_encounter |> 
+  left_join(data_participant |> select(participant_id, analysis_inclusion_participant), by = "participant_id") |> 
+  left_join(data_visit_week |> select(visit_week_id, analysis_inclusion_visit_week), by = "visit_week_id")
+
+data_encounter |> 
+  select(analysis_inclusion_participant, analysis_inclusion_visit_week) |> 
+  tbl_summary()
+
+# clinical
+
+data_diagnoses <- data_diagnoses |> 
+  left_join(data_participant |> select(participant_id, analysis_inclusion_participant), by = "participant_id") |> 
+  left_join(data_visit_week |> select(visit_week_id, analysis_inclusion_visit_week), by = "visit_week_id")
+
+data_diagnoses |> 
+  select(analysis_inclusion_participant, analysis_inclusion_visit_week) |> 
+  tbl_summary()
+
+
+# anthropometric
+
+data_height_original <- data_height_original |> 
+  left_join(data_participant |> select(participant_id, analysis_inclusion_participant), by = "participant_id") |> 
+  left_join(data_visit_week |> select(visit_week_id, analysis_inclusion_visit_week), by = "visit_week_id")
+
+data_height_original |> 
+  select(analysis_inclusion_participant, analysis_inclusion_visit_week) |> 
+  tbl_summary()
+
+data_height_clean <- data_height_clean |> 
+  left_join(data_participant |> select(participant_id, analysis_inclusion_participant), by = "participant_id") |> 
+  left_join(data_visit_week |> select(visit_week_id, analysis_inclusion_visit_week), by = "visit_week_id")
+
+data_height_clean |> 
+  select(analysis_inclusion_participant, analysis_inclusion_visit_week) |> 
+  tbl_summary()
+
+
+data_weight_original <- data_weight_original |> 
+  left_join(data_participant |> select(participant_id, analysis_inclusion_participant), by = "participant_id") |> 
+  left_join(data_visit_week |> select(visit_week_id, analysis_inclusion_visit_week), by = "visit_week_id")
+
+data_weight_original |> 
+  select(analysis_inclusion_participant, analysis_inclusion_visit_week) |> 
+  tbl_summary()
+
+data_weight_clean <- data_weight_clean |> 
+  left_join(data_participant |> select(participant_id, analysis_inclusion_participant), by = "participant_id") |> 
+  left_join(data_visit_week |> select(visit_week_id, analysis_inclusion_visit_week), by = "visit_week_id")
+
+data_weight_clean |> 
+  select(analysis_inclusion_participant, analysis_inclusion_visit_week) |> 
+  tbl_summary()
+
+data_head <- data_head |> 
+  left_join(data_participant |> select(participant_id, analysis_inclusion_participant), by = "participant_id") |> 
+  left_join(data_visit_week |> select(visit_week_id, analysis_inclusion_visit_week), by = "visit_week_id")
+
+data_head |> 
+  select(analysis_inclusion_participant, analysis_inclusion_visit_week) |> 
+  tbl_summary()
+
+
+data_bmi <- data_bmi |> 
+  left_join(data_participant |> select(participant_id, analysis_inclusion_participant), by = "participant_id") |> 
+  left_join(data_visit_week |> select(visit_week_id, analysis_inclusion_visit_week), by = "visit_week_id")
+
+data_bmi |> 
+  select(analysis_inclusion_participant, analysis_inclusion_visit_week) |> 
+  tbl_summary()
+
+```
+
+
+Apply inclusion criteria
+
+```{r}
+
+data_visit_week <- data_visit_week |> 
+  filter(analysis_inclusion_visit_week == "Include")
+
+data_participant <- data_participant |> 
+  filter(analysis_inclusion_participant == "Include" & analysis_inclusion_visit_week == "Include") |> 
+  select(-c(analysis_inclusion_participant, analysis_inclusion_visit_week))
+
+data_case <- data_case |> 
+  filter(analysis_inclusion_participant == "Include" & analysis_inclusion_visit_week == "Include") |> 
+  select(-c(analysis_inclusion_participant, analysis_inclusion_visit_week))
+
+data_diagnoses <- data_diagnoses |> 
+  filter(analysis_inclusion_participant == "Include" & analysis_inclusion_visit_week == "Include") |> 
+  select(-c(analysis_inclusion_participant, analysis_inclusion_visit_week))
+
+data_height_original <- data_height_original |> 
+  filter(analysis_inclusion_participant == "Include" & analysis_inclusion_visit_week == "Include") |> 
+  select(-c(analysis_inclusion_participant, analysis_inclusion_visit_week))
+
+data_height_clean <- data_height_clean |> 
+  filter(analysis_inclusion_participant == "Include" & analysis_inclusion_visit_week == "Include") |> 
+  select(-c(analysis_inclusion_participant, analysis_inclusion_visit_week))
+
+data_weight_original <- data_weight_original |> 
+  filter(analysis_inclusion_participant == "Include" & analysis_inclusion_visit_week == "Include") |> 
+  select(-c(analysis_inclusion_participant, analysis_inclusion_visit_week))
+
+data_weight_clean <- data_weight_clean |> 
+  filter(analysis_inclusion_participant == "Include" & analysis_inclusion_visit_week == "Include") |> 
+  select(-c(analysis_inclusion_participant, analysis_inclusion_visit_week))
+
+data_head <- data_head |> 
+  filter(analysis_inclusion_participant == "Include" & analysis_inclusion_visit_week == "Include") |> 
+  select(-c(analysis_inclusion_participant, analysis_inclusion_visit_week))
+
+data_bmi <- data_bmi |> 
+  filter(analysis_inclusion_participant == "Include" & analysis_inclusion_visit_week == "Include") |> 
+  select(-c(analysis_inclusion_participant, analysis_inclusion_visit_week))
+
+
+```
+
+# Data preparation
+
+## Code variables
+
+### Nationality
+
+```{r}
+
+data_participant <- data_participant |> 
+  mutate(nationality_group = case_when(nationality == "Switzerland" ~ "Swiss",
+                                       nationality == "Germany" ~ "German",
+                                       nationality == "Portugal"  ~ "Portuguese",
+                                       nationality == "Italy" ~ "Italian",
+                                       continent_nationality == "Europe" ~ subcontinent_nationality,
+                                       TRUE ~ continent_nationality),
+         nationality_group_short = case_when(nationality == "Switzerland" ~ "Swiss",
+                                             continent_nationality == "Europe" ~ "European",
+                                             is.na(continent_nationality)==FALSE ~ "Non-European",
+                                             TRUE ~ NA))
+
+data_visit_week <- data_visit_week |> 
+  left_join(data_participant |> select(participant_id, nationality_group, nationality_group_short), by = "participant_id")
+
+data_height_original <- data_height_original |> 
+  left_join(data_participant |> select(participant_id, nationality_group, nationality_group_short), by = "participant_id")
+
+data_weight_original <- data_weight_original |> 
+  left_join(data_participant |> select(participant_id, nationality_group, nationality_group_short), by = "participant_id")
+
+data_head <- data_head |> 
+  left_join(data_participant |> select(participant_id, nationality_group, nationality_group_short), by = "participant_id")
+
+data_bmi <- data_bmi |> 
+  left_join(data_participant |> select(participant_id, nationality_group, nationality_group_short), by = "participant_id")
+
+```
+
+
+### Swiss-SEP
+
+```{r}
+
+data_participant <- data_participant |> 
+  mutate(swiss_sep_3_decile = factor(case_when(swiss_sep_3 < 50.09 ~ "1",
+                                             swiss_sep_3 < 54.74 ~ "2",
+                                             swiss_sep_3 < 58.06 ~ "3",
+                                             swiss_sep_3 < 60.90 ~ "4",
+                                             swiss_sep_3 < 63.56 ~ "5",
+                                             swiss_sep_3 < 66.28 ~ "6",
+                                             swiss_sep_3 < 69.21 ~ "7",
+                                             swiss_sep_3 < 72.65 ~ "8",
+                                             swiss_sep_3 < 77.18 ~ "9",
+                                             swiss_sep_3 >= 77.18 ~ "10")),
+         swiss_sep_3_quintile = factor(case_when(swiss_sep_3_decile == "1" | swiss_sep_3_decile == "2" ~ "1",
+                                                 swiss_sep_3_decile == "3" | swiss_sep_3_decile == "4" ~ "2",
+                                                 swiss_sep_3_decile == "5" | swiss_sep_3_decile == "6" ~ "3",
+                                                 swiss_sep_3_decile == "7" | swiss_sep_3_decile == "8" ~ "4",
+                                                 swiss_sep_3_decile == "9" | swiss_sep_3_decile == "10" ~ "5")))
+
+data_visit_week <- data_visit_week |> 
+  left_join(data_participant |> select(participant_id, swiss_sep_3_decile, swiss_sep_3_quintile), by = "participant_id")
+
+data_height_original <- data_height_original |> 
+  left_join(data_participant |> select(participant_id, swiss_sep_3_decile, swiss_sep_3_quintile), by = "participant_id")
+
+data_weight_original <- data_weight_original |> 
+  left_join(data_participant |> select(participant_id, swiss_sep_3_decile, swiss_sep_3_quintile), by = "participant_id")
+
+data_head <- data_head |> 
+  left_join(data_participant |> select(participant_id, swiss_sep_3_decile, swiss_sep_3_quintile), by = "participant_id")
+            
+data_bmi <- data_bmi |> 
+  left_join(data_participant |> select(participant_id, swiss_sep_3_decile, swiss_sep_3_quintile), by = "participant_id")
+
+```
+
+### Age
+
+```{r}
+
+data_participant <- data_participant |> 
+  mutate(age_years_SwissPedGrowth_start = as.numeric(difftime(ymd("2017-01-01"), birth_date, units = "days"))/365.25,
+         age_years_SwissPedGrowth_end = as.numeric(difftime(ymd("2023-12-31"), birth_date, units = "days"))/365.25)
+
+
+data_bmi <- data_bmi |> 
+  mutate(age_years_bmi = age_days_bmi/365.25)
+
+```
+
+
+### Age groups
+
+```{r}
+
+data_visit_week <- data_visit_week |> 
+  mutate(age_group = case_when(age_years_visit_week_start < 1 ~ "Infancy: <1",
+                               age_years_visit_week_start < 6 ~ "Preschool age: 1–5",
+                               age_years_visit_week_start < 12 ~ "School age: 6–11",
+                               age_years_visit_week_start < 16 ~ "Early adolescence: 12–15",
+                               age_years_visit_week_start < 20 ~ "Late adolescence: 16–19",
+                               age_years_visit_week_start >= 20 ~ "Adult age: >= 20")) |> 
+  mutate(age_group = factor(age_group, levels = c("Infancy: <1", "Preschool age: 1–5", "School age: 6–11", "Early adolescence: 12–15", "Late adolescence: 16–19", "Adult age: >= 20")))
+
+data_height_original <- data_height_original |> 
+  mutate(age_group = case_when(age_years_height < 1 ~ "Infancy: <1",
+                               age_years_height < 6 ~ "Preschool age: 1–5",
+                               age_years_height < 12 ~ "School age: 6–11",
+                               age_years_height < 16 ~ "Early adolescence: 12–15",
+                               age_years_height < 20 ~ "Late adolescence: 16–19",
+                               age_years_height >= 20 ~ "Adult age: >= 20")) |> 
+  mutate(age_group = factor(age_group, levels = c("Infancy: <1", "Preschool age: 1–5", "School age: 6–11", "Early adolescence: 12–15", "Late adolescence: 16–19", "Adult age: >= 20")))
+
+data_weight_original <- data_weight_original |> 
+  mutate(age_group = case_when(age_years_weight < 1 ~ "Infancy: <1",
+                               age_years_weight < 6 ~ "Preschool age: 1–5",
+                               age_years_weight < 12 ~ "School age: 6–11",
+                               age_years_weight < 16 ~ "Early adolescence: 12–15",
+                               age_years_weight < 20 ~ "Late adolescence: 16–19",
+                               age_years_weight >= 20 ~ "Adult age: >= 20")) |> 
+  mutate(age_group = factor(age_group, levels = c("Infancy: <1", "Preschool age: 1–5", "School age: 6–11", "Early adolescence: 12–15", "Late adolescence: 16–19", "Adult age: >= 20")))
+
+data_head <- data_head |> 
+  mutate(age_group = case_when(age_years_circumference < 1 ~ "Infancy: <1",
+                               age_years_circumference < 6 ~ "Preschool age: 1–5",
+                               age_years_circumference < 12 ~ "School age: 6–11",
+                               age_years_circumference < 16 ~ "Early adolescence: 12–15",
+                               age_years_circumference < 20 ~ "Late adolescence: 16–19",
+                               age_years_circumference >= 20 ~ "Adult age: >= 20")) |> 
+  mutate(age_group = factor(age_group, levels = c("Infancy: <1", "Preschool age: 1–5", "School age: 6–11", "Early adolescence: 12–15", "Late adolescence: 16–19", "Adult age: >= 20")))
+
+data_bmi <- data_bmi |> 
+  mutate(age_group = case_when(age_years_bmi < 1 ~ "Infancy: <1",
+                               age_years_bmi < 6 ~ "Preschool age: 1–5",
+                               age_years_bmi < 12 ~ "School age: 6–11",
+                               age_years_bmi < 16 ~ "Early adolescence: 12–15",
+                               age_years_bmi < 20 ~ "Late adolescence: 16–19",
+                               age_years_bmi >= 20 ~ "Adult age: >= 20")) |> 
+  mutate(age_group = factor(age_group, levels = c("Infancy: <1", "Preschool age: 1–5", "School age: 6–11", "Early adolescence: 12–15", "Late adolescence: 16–19", "Adult age: >= 20")))
+
+
+```
+
+
+
+### Hospital
+
+Hospital
+
+```{r}
+
+data_participant <- data_participant |> 
+  mutate(hospital = case_when(hospital == "CHUV" ~ "Lausanne",
+                              hospital == "HUG" ~ "Geneva",
+                              hospital == "Insel Gruppe AG" ~ "Bern",
+                              hospital == "Universitäts-Kinderspital Zürich - Eleonorenstiftung"  ~ "Zurich",
+                              hospital == "University Children Hospital Basel" ~ "Basel",
+                              hospital == "Luzerner Kantonsspital AG" ~ "Luzern"))
+
+data_visit_week <- data_visit_week |> 
+  mutate(hospital = case_when(hospital == "CHUV" ~ "Lausanne",
+                              hospital == "HUG" ~ "Geneva",
+                              hospital == "Insel Gruppe AG" ~ "Bern",
+                              hospital == "Universitäts-Kinderspital Zürich - Eleonorenstiftung"  ~ "Zurich",
+                              hospital == "University Children Hospital Basel" ~ "Basel",
+                              hospital == "Luzerner Kantonsspital AG" ~ "Luzern"))
+
+data_diagnoses <- data_diagnoses |> 
+  mutate(hospital = case_when(hospital == "CHUV" ~ "Lausanne",
+                              hospital == "HUG" ~ "Geneva",
+                              hospital == "Insel Gruppe AG" ~ "Bern",
+                              hospital == "Universitäts-Kinderspital Zürich - Eleonorenstiftung"  ~ "Zurich",
+                              hospital == "University Children Hospital Basel" ~ "Basel",
+                              hospital == "Luzerner Kantonsspital AG" ~ "Luzern"))
+
+data_height_original <- data_height_original |> 
+  mutate(hospital = case_when(hospital == "CHUV" ~ "Lausanne",
+                              hospital == "HUG" ~ "Geneva",
+                              hospital == "Insel Gruppe AG" ~ "Bern",
+                              hospital == "Universitäts-Kinderspital Zürich - Eleonorenstiftung"  ~ "Zurich",
+                              hospital == "University Children Hospital Basel" ~ "Basel",
+                              hospital == "Luzerner Kantonsspital AG" ~ "Luzern"))
+
+data_weight_original <- data_weight_original |> 
+  mutate(hospital = case_when(hospital == "CHUV" ~ "Lausanne",
+                              hospital == "HUG" ~ "Geneva",
+                              hospital == "Insel Gruppe AG" ~ "Bern",
+                              hospital == "Universitäts-Kinderspital Zürich - Eleonorenstiftung"  ~ "Zurich",
+                              hospital == "University Children Hospital Basel" ~ "Basel",
+                              hospital == "Luzerner Kantonsspital AG" ~ "Luzern"))
+
+data_head <- data_head |> 
+  mutate(hospital = case_when(hospital == "CHUV" ~ "Lausanne",
+                              hospital == "HUG" ~ "Geneva",
+                              hospital == "Insel Gruppe AG" ~ "Bern",
+                              hospital == "Universitäts-Kinderspital Zürich - Eleonorenstiftung"  ~ "Zurich",
+                              hospital == "University Children Hospital Basel" ~ "Basel",
+                              hospital == "Luzerner Kantonsspital AG" ~ "Luzern"))
+
+data_bmi <- data_bmi |> 
+  mutate(hospital = case_when(hospital == "CHUV" ~ "Lausanne",
+                              hospital == "HUG" ~ "Geneva",
+                              hospital == "Insel Gruppe AG" ~ "Bern",
+                              hospital == "Universitäts-Kinderspital Zürich - Eleonorenstiftung"  ~ "Zurich",
+                              hospital == "University Children Hospital Basel" ~ "Basel",
+                              hospital == "Luzerner Kantonsspital AG" ~ "Luzern"))
+
+
+data_participant <- data_participant |> 
+  mutate(hospital = factor(hospital, levels = c("Basel", "Bern", "Geneva", "Lausanne", "Luzern", "Zurich")))
+
+data_visit_week <- data_visit_week |> 
+  mutate(hospital = factor(hospital, levels = c("Basel", "Bern", "Geneva", "Lausanne", "Luzern", "Zurich")))
+
+data_diagnoses <- data_diagnoses |> 
+  mutate(hospital = factor(hospital, levels = c("Basel", "Bern", "Geneva", "Lausanne", "Luzern", "Zurich")))
+
+data_height_original <- data_height_original |> 
+  mutate(hospital = factor(hospital, levels = c("Basel", "Bern", "Geneva", "Lausanne", "Luzern", "Zurich")))
+
+data_weight_original <- data_weight_original |> 
+  mutate(hospital = factor(hospital, levels = c("Basel", "Bern", "Geneva", "Lausanne", "Luzern", "Zurich")))
+
+data_head <- data_head |> 
+  mutate(hospital = factor(hospital, levels = c("Basel", "Bern", "Geneva", "Lausanne", "Luzern", "Zurich")))
+
+data_bmi <- data_bmi |> 
+  mutate(hospital = factor(hospital, levels = c("Basel", "Bern", "Geneva", "Lausanne", "Luzern", "Zurich")))
+
+```
+
+
+Hospital coded
+
+```{r}
+
+set.seed(1000)
+
+hospital_code <- data_participant |> 
+  select(hospital) |> 
+  distinct(hospital) |> 
+  slice_sample(prop = 1)
+
+hospital_code <- hospital_code |> 
+  mutate(hospital_coded = LETTERS[1:n()])
+
+
+hospital_code
+
+
+data_participant <- data_participant |> 
+  left_join(hospital_code, by = "hospital")
+
+data_visit_week <- data_visit_week |> 
+  left_join(hospital_code, by = "hospital")
+
+data_diagnoses <- data_diagnoses |> 
+  left_join(hospital_code, by = "hospital")
+
+data_height_original <- data_height_original |> 
+  left_join(hospital_code, by = "hospital")
+
+data_weight_original <- data_weight_original |> 
+  left_join(hospital_code, by = "hospital")
+
+data_head <- data_head |> 
+  left_join(hospital_code, by = "hospital")
+
+data_bmi <- data_bmi |> 
+  left_join(hospital_code, by = "hospital")
+
+```
+
+
+
+### Consent
+
+```{r}
+
+data_participant <- data_participant |> 
+  mutate(general_consent = case_when(is.na(consent_status) ~ "Unkown",
+                                     TRUE ~ consent_status))
+
+data_visit_week <- data_visit_week |> 
+  mutate(general_consent = case_when(is.na(consent_status) ~ "Unkown",
+                                     TRUE ~ consent_status))
+
+```
+
+
+### Visits
+
+```{r}
+
+data_visit_week <- data_visit_week |> 
+  mutate(visit_week_type = factor(visit_week_type,
+                             levels = c("Outpatient visit", "ER visit", "Inpatient stay")))
+
+data_participant <- data_participant |> 
+  left_join(data_visit_week |>
+              filter(visit_week_type == "Outpatient visit") |>
+              count(participant_id) |> rename("number_outpatient_visits" = "n"),
+            by = "participant_id") |> 
+  left_join(data_visit_week |>
+              filter(visit_week_type == "ER visit") |>
+              count(participant_id) |> rename("number_ER_visits" = "n"),
+            by = "participant_id") |> 
+  left_join(data_visit_week |>
+              filter(visit_week_type == "Inpatient stay") |>
+              count(participant_id) |> rename("number_inpatient_stays" = "n"),
+            by = "participant_id") |> 
+  mutate(outpatient_visit = factor(case_when(number_outpatient_visits == 1 ~ "One visit",
+                                      number_outpatient_visits >= 2 ~ "Multiple visits",
+                                      is.na(number_outpatient_visits) ~ "No visit"),
+                                   levels = c("No visit", "One visit", "Multiple visits")),
+         ER_visit = factor(case_when(number_ER_visits == 1 ~ "One visit",
+                                      number_ER_visits >= 2 ~ "Multiple visits",
+                                      is.na(number_ER_visits) ~ "No visit"),
+                                   levels = c("No visit", "One visit", "Multiple visits")),
+         inpatient_stay = factor(case_when(number_inpatient_stays == 1 ~ "One visit",
+                                      number_inpatient_stays >= 2 ~ "Multiple visits",
+                                      is.na(number_inpatient_stays) ~ "No visit"),
+                                   levels = c("No visit", "One visit", "Multiple visits")))
+  
+
+
+
+```
+
+
+### Diagnoses affecting growth
+
+Define excluded diagnoses affecting growth
+
+```{r}
+
+icd_excluded_temporarily <- c(
+  ## Intestinal infections
+  "A00", "A01", "A02", "A03", "A04", "A05", "A06", "A07", "A08", "A09",
+  
+  ## Certain zoonotic bacterial diseases
+  "A20", "A21", "A22", "A23", "A24", "A25", "A26", "A27", "A28",
+  
+  ## Other bacterial diseases
+  "A30", "A31", "A32", "A33", "A34", "A35", "A36", "A37", "A38", "A39", "A40", "A41", "A42", "A43", "A44", "A45", "A46", "A47", "A48", "A49",
+  
+  ## Rickettsioses
+  "A75", "A76", "A77", "A78", "A79",
+  
+  ## Viral infections of the central nervous system
+  "A80", "A81", "A82",   "A83", "A84", "A85", "A86", "A87", "A88", "A89",
+    
+  ## Arthropod-borne viral fevers and viral haemorrhagic fevers
+  "A92", "A93", "A94", "A95", "A96", "A97", "A98", "A99",
+
+  ## Viral hepatitis
+  "B15", "B16", "B17", "B18", "B19",
+  
+  ## Systematic mycoses
+  "B37", "B38", "B39",
+  "B40", "B41", "B42", "B43", "B44", "B45", "B46",
+  
+  ## Protozoal diseases
+  "B50", "B51", "B52", "B53", "B54", "B55", "B56", "B57", "B58", "B59",
+  "B60", "B61", "B62", "B63", "B64", "B65", "B66", "B67", "B68", "B69",
+  "B70", "B71", "B72", "B73",
+  
+  ## Helminthiases
+  "B74", "B75", "B76", "B77", "B78", "B79",
+  "B80", "B81", "B82", "B83",
+  
+  ## Acute rheumatic fever
+  "I00", "I01", "I02",
+  
+  ## Acute pericarditis
+  "I30",
+  
+  ## Acute and subacute endocarditis
+  "I33",
+  
+  ## Acute myocarditis
+  "I40",
+  
+  ## Influenza and pneumonia
+  "J09",
+  "J10", "J11", "J12", "J13", "J14", "J15", "J16", "J17", "J18",
+  
+  ## Other acute lower respiratory infections
+  "J20", "J21", "J22",
+  
+  ## Appendicitis
+  "K35", "K36", "K37",
+  
+  ## Noninfective enteritis and colitis
+  "K50", "K51", "K52",
+  
+  ## Peritonitis
+  "K65",
+  
+  ## Cholecystitis
+  "K81",
+  
+  ## Acute pancreatitis
+  "K85",
+  
+  ## Intestinal malabsorption
+  "K90",
+  
+  ## Postprocedural disorders of digestive system, not elsewhere classified
+  "K91",
+  
+  ## Staphylococcal scalded skin syndrome
+  "L00",
+  
+  ## Infectious arthropathies
+  "M00", "M01", "M02", "M03",
+    
+  ## Salpingitis and oophoritis, Inflammatory disease of uterus, except cervix
+  "N70", "N71"
+  
+)
+
+icd_excluded_first_18_months <- c(
+  
+  ## Fetus and newborn affected by maternal factors and by complications of pregnancy, labour and delivery
+  "P00", "P01", "P02", "P03", "P04",
+  
+  ## Slow fetal growth and fetal malnutrition
+  "P05",
+  
+  ## Disorders related to short gestation and low birth weight, not elsewhere classified
+  "P06",
+  
+  ## Respiratory and cardiovascular disorders specific to the perinatal period
+  "P20", "P21", "P22", "P23", "P24", "P25", "P26", "P27", "P28", "P29",
+  
+  ## Infections specific to the perinatal period
+  "P35", "P36", "P37", "P38", "P39",
+  
+  ## Hydrops fetalis due to haemolytic disease
+  "P56",
+  
+  ## Transitory endocrine and metabolic disorders specific to fetus and newborn
+  "P70", "P71", "P72", "P73", "P74",
+  
+  ## Digestive system disorders of fetus and newborn
+  "P75", "P76", "P77", "P78"
+  
+)
+
+icd_excluded_permanently <- c(
+  ## Tuberculosis
+  "A15", "A16", "A17", "A18", "A19",
+  
+  ## Syphillis
+  "A50", "A51", "A52",
+  
+  ## Human immunodeficiency virus [HIV] disease
+  "B20", "B21", "B22", "B23", "B24",
+  
+  ## Malignant neoplasms
+  "C00", "C01", "C02", "C03", "C04", "C05", "C06", "C07", "C08", "C09",
+  "C10", "C11", "C12", "C13", "C14", "C15", "C16", "C17", "C18", "C19",
+  "C20", "C21", "C22", "C23", "C24", "C25", "C26", "C27", "C28", "C29",
+  "C30", "C31", "C32", "C33", "C34", "C35", "C36", "C37", "C38", "C39",
+  "C40", "C41", "C42", "C43", "C44", "C45", "C46", "C47", "C48", "C49",
+  "C50", "C51", "C52", "C53", "C54", "C55", "C56", "C57", "C58", "C59",
+  "C60", "C61", "C62", "C63", "C64", "C65", "C66", "C67", "C68", "C69",
+  "C70", "C71", "C72", "C73", "C74", "C75", "C76", "C77", "C78", "C79",
+  "C80", "C81", "C82", "C83", "C84", "C85", "C86", "C87", "C88", "C89",
+  "C90", "C91", "C92", "C93", "C94", "C95", "C96", "C97",
+  
+  ## In situ neoplasms
+  "D00", "D01", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09",
+  
+  ## Benign neoplasms of GI tract, Hrmonal systems
+  "D10", "D11", "D12", "D13",
+  "D27",
+  "D29.2",
+  "D30", "D33", "D34", "D35",
+  
+  ## Neoplasms of uncertain or unkown behaviour
+  "D37", "D38", "D39",
+  "D40", "D41", "D42", "D43", "D44", "D45", "D46", "D47", "D48",
+  
+  ## Haemolytic anaemias
+  "D55", "D56", "D57", "D58", "D59",
+  
+  ## Aplastic and other anaemias
+  "D60", "D61", "D63", "D64",
+  
+  ## Certain disorders involving the immune mechanism (Di-George and more)
+  "D80", "D81", "D82", "D83", "D84", "D85", "D86", "D87", "D88", "D89",
+  
+  ## Disorders of thyroid gland
+  "E00", "E01", "E02", "E03", "E04", "E05", "E06", "E07",
+  
+  ## Diabetes mellitus
+  "E10", "E11", "E12", "E13", "E14",
+  
+  ## Other disorders of glucose regulation and pancreatic internal secretion
+  "E15", "E16",
+  
+  ## Disorders of other endocrine glands
+  "E20", "E21", "E22", "E23", "E24", "E25", "E26", "E27", "E28", "E29",
+  "E30", "E31", "E32", "E33", "E34", "E35",
+  
+  ## Malnutrition
+  "E40", "E41", "E42", "E43", "E44", "E45", "E46",
+  
+  ## Other nutritional deficiencies
+  "E50", "E51", "E52", "E53", "E54", "E55", "E56", "E57", "E58", "E59",
+  "E60", "E61", "E62", "E63", "E64",
+  
+  ## Obesity and other hyperalimentation
+  "E65", "E66", "E67", "E68",
+  
+  ## Metabolic disorders
+  "E70", "E71", "E72", "E73", "E74", "E75", "E76", "E77", "E78", "E79",
+  "E80", "E81", "E82", "E83", "E84", "E85", "E86", "E87", "E88", "E89",
+  "E90",
+  
+  ## Mental and behavioural disorders due to psychoactive substance use
+  "F10", "F11", "F12", "F13", "F14", "F15", "F16", "F17", "F18", "F19",
+  
+  ## Depressive episode
+  "F32", "F33",
+  
+  ## Eating disorders
+  "F50",
+  
+  ## Abuse of non-dependence-producing substances
+  "F55",
+  
+  ## Inflammatory diseases of the central nervous system
+  "G00", "G01", "G02", "G03", "G04", "G05", "G06", "G07",
+  
+  ## Systemic atrophies primarily affecting the central nervous system
+  "G10", "G11", "G12", "G13", "G14",
+  
+  ## Hereditary and idiopathic neuropathy
+  "G60",
+  
+  ## Primary disorders of muscles
+  "G71",
+
+  ## Chronic rheumatic heart diseases
+  "I05", "I06", "I07", "I08", "I09",
+  
+  ## Diseases of liver
+  "K70", "K71", "K72", "K73", "K74", "K75", "K76", "K77",
+  
+  ## Systemic connective tissue disorders (glucocorticoid treatment)
+  "M30", "M31", "M32", "M33", "M34", "M35", "M36",
+  
+  ## Other osteopathies
+  "M86", "M87", "M88", "M89",
+  "M90", 
+  
+  ## Chondropathies
+  "M91", "M92", "M93", "M94",
+  
+  ## Glomerular diseases
+  "N00", "N01", "N02", "N03", "N04", "N05", "N06", "N07", "N08",
+  
+  ## Renal tubulo-interstitial diseases
+  "N10", "N11", "N12", "N13", "N14", "N15", "N16",
+  
+  ## Renal failure
+  "N17", "N18", "N19",
+  
+  ## Other disorders of kidney and ureter
+  "N25", "N26", "N27", "N28", "N29",
+
+  ## Pregnancy
+  "O00", "O01", "O02", "O03", "O04", "O05", "O06", "O07", "O08", "O09",
+  "O10", "O11", "O12", "O13", "O14", "O15", "O16", "O17", "O18", "O19",
+  "O20", "O21", "O22", "O23", "O24", "O25", "O26", "O27", "O28", "O29",
+  "O30", "O31", "O32", "O33", "O34", "O35", "O36", "O37", "O38", "O39",
+  "O40", "O41", "O42", "O43", "O44", "O45", "O46", "O47", "O48", "O49",
+  "O50", "O51", "O52", "O53", "O54", "O55", "O56", "O57", "O58", "O59", 
+  "O60", "O61", "O62", "O63", "O64", "O65", "O66", "O67", "O68", "O69",
+  "O70", "O71", "O72", "O73", "O74", "O75", "O76", "O77", "O78", "O79",
+  "O80", "O81", "O82", "O83", "O84", "O85", "O86", "O87", "O88", "O89",
+  "O90", "O91", "O92", "O93", "O94", "O95", "O96", "O97", "O98", "O99",
+
+  
+  ## Congenital malformations of the nervous system
+  "Q00", "Q01", "Q02", "Q03", "Q04", "Q05", "Q06", "Q07",
+  
+  ## Congenital malformations of the circulatory system
+  "Q20", "Q21", "Q22", "Q23", "Q24", "Q25", "Q26", "Q27", "Q28",
+  
+  ## Congenital malformations of trachea, lung
+  "Q32", "Q33",
+  
+  ## Other congenital malformations of the digestive system
+  "Q38", "Q39",
+  "Q40", "Q41", "Q42", "Q43", "Q44", "Q45",
+  
+  ## Indeterminate sex and pseudohermaphroditism
+  "Q56",
+  
+  ## Congenital malformations of the urinary system
+  "Q60", "Q61", "Q62", "Q63", "Q64",
+  
+  ## Congenital malformations and deformations of the musculoskeletal system
+  "Q65", "Q66", "Q67", "Q68", "Q69",
+  "Q70", "Q71", "Q72", "Q73", "Q74", "Q75", "Q76", "Q77", "Q78", "Q79",
+  
+  ## Congenital malformation syndromes
+  "Q86", "Q87", "Q88", "Q89",
+  
+  ## Chromosomal abnormalities, not elsewhere classified
+  "Q90", "Q91", "Q92", "Q93", "Q94", "Q95", "Q96", "Q97", "Q98", "Q99",
+  
+  ## Fracture of neck
+  "S12",
+  
+  ## Fracture of rib(s), sternum and thoracic spine
+  "S22",
+  
+  ## Fracture of femur
+  "S72",
+  
+  ## Traumatic amputation of hip and thigh
+  "S78",
+  
+  ## Fracture of lower leg, including ankle
+  "S82",
+  
+  ## Traumatic amputation of lower leg
+  "S88",
+  
+  ## Fracture of foot, except ankle
+  "S92",
+  
+  ## Traumatic amputation of ankle and foot
+  "S98",
+  
+  ## Amputation of limb(s)
+  "Y83.5"
+  
+)
+
+
+
+```
+
+Group diagnoses
+
+```{r}
+
+data_diagnoses <- data_diagnoses |> 
+  mutate(diagnosis_affecting_growth = factor(case_when(is.na(diagnosis_icd10_code) & is.na(diagnosis_orpha_code_associated_icd) ~ NA,
+                                         grepl(paste(icd_excluded_permanently, collapse = "|"), diagnosis_icd10_code) | grepl(paste(icd_excluded_permanently, collapse = "|"), diagnosis_orpha_code_associated_icd) ~ "Affecting growth permanently",
+                                         grepl(paste(icd_excluded_first_18_months, collapse = "|"), diagnosis_icd10_code) | grepl(paste(icd_excluded_first_18_months, collapse = "|"), diagnosis_orpha_code_associated_icd) ~ "Affecting growth temporarily",
+                                         grepl(paste(icd_excluded_temporarily, collapse = "|"), diagnosis_icd10_code) | grepl(paste(icd_excluded_temporarily, collapse = "|"), diagnosis_orpha_code_associated_icd) ~ "Affecting growth temporarily",
+                                         TRUE ~ "Include"),
+                                      levels = c("Include", "Affecting growth permanently", "Affecting growth temporarily")))
+
+```
+
+```{r}
+
+data_visit_week <- data_visit_week |> 
+  left_join(data_diagnoses |> select(diagnosis_affecting_growth, visit_week_id) |> group_by(visit_week_id) |> arrange(desc(diagnosis_affecting_growth)) |> slice(1) |> ungroup(), by = "visit_week_id")
+
+```
+
+
+### Anthro availability
+
+#### by participant
+
+```{r}
+
+data_participant <- data_participant |> 
+  left_join(data_height_original |>
+              count(participant_id) |> rename("number_height_measurements" = "n"),
+            by = "participant_id") |>
+  left_join(data_weight_original |>
+              count(participant_id) |> rename("number_weight_measurements" = "n"),
+            by = "participant_id") |> 
+  left_join(data_head |>
+              count(participant_id) |> rename("number_head_measurements" = "n"),
+            by = "participant_id") |> 
+  left_join(data_bmi |>
+              count(participant_id) |> rename("number_bmi_measurements" = "n"),
+            by = "participant_id") |> 
+  mutate(height_measurement = factor(case_when(number_height_measurements  == 1 ~ "1 height",
+                                        number_height_measurements > 1 ~ "2+ heights",
+                                        is.na(number_height_measurements) ~ "No height"),
+                                     levels = c("No height", "1 height", "2+ heights")),
+         weight_measurement = factor(case_when(number_weight_measurements  == 1 ~ "1 weight",
+                                        number_weight_measurements > 1 ~ "2+ weights",
+                                        is.na(number_weight_measurements) ~ "No weight"),
+                                     levels = c("No weight", "1 weight", "2+ weights")),
+         head_measurement = factor(case_when(number_head_measurements  == 1 ~ "1 head circumference",
+                                        number_head_measurements > 1 ~ "2+ head circumferences",
+                                        is.na(number_head_measurements) ~ "No head circumference"),
+                                   levels = c("No head circumference", "1 head circumference", "2+ head circumferences")),
+         bmi_measurement = factor(case_when(number_bmi_measurements  == 1 ~ "1 bmi",
+                                        number_bmi_measurements > 1 ~ "2+ bmis",
+                                        is.na(number_bmi_measurements) ~ "No bmi"),
+                                  levels = c("No bmi", "1 bmi", "2+ bmis")))
+
+
+
+```
+
+
+#### by hospital visit
+
+```{r}
+
+data_visit_week <- data_visit_week |> 
+  left_join(data_height_original |>
+              count(visit_week_id) |> rename("number_height_measurements" = "n"),
+            by = "visit_week_id") |>
+  left_join(data_weight_original |>
+              count(visit_week_id) |> rename("number_weight_measurements" = "n"),
+            by = "visit_week_id") |> 
+  left_join(data_head |>
+              count(visit_week_id) |> rename("number_head_measurements" = "n"),
+            by = "visit_week_id") |> 
+  left_join(data_bmi |>
+              count(visit_week_id) |> rename("number_bmi_measurements" = "n"),
+            by = "visit_week_id") |> 
+  mutate(height_measurement = factor(case_when(number_height_measurements  == 1 ~ "1 height",
+                                        number_height_measurements > 1 ~ "2+ heights",
+                                        is.na(number_height_measurements) ~ "No height"),
+                                     levels = c("No height", "1 height", "2+ heights")),
+         weight_measurement = factor(case_when(number_weight_measurements  == 1 ~ "1 weight",
+                                        number_weight_measurements > 1 ~ "2+ weights",
+                                        is.na(number_weight_measurements) ~ "No weight"),
+                                     levels = c("No weight", "1 weight", "2+ weights")),
+         head_measurement = factor(case_when(number_head_measurements  == 1 ~ "1 head circumference",
+                                        number_head_measurements > 1 ~ "2+ head circumferences",
+                                        is.na(number_head_measurements) ~ "No head circumference"),
+                                   levels = c("No head circumference", "1 head circumference", "2+ head circumferences")),
+         bmi_measurement = factor(case_when(number_bmi_measurements  == 1 ~ "1 bmi",
+                                        number_bmi_measurements > 1 ~ "2+ bmis",
+                                        is.na(number_bmi_measurements) ~ "No bmi"),
+                                  levels = c("No bmi", "1 bmi", "2+ bmis")))
+
+```
+
+
+### Anthro quality
+
+Self-developed results: based on self-developed algorithm
+
+Growthcleanr results
+
+Combined results: Self-developed + growth cleanr combined
+
+#### Height
+
+```{r}
+
+### Manual result
+
+data_height_original <- data_height_original |> 
+  mutate(manual_result_fct = factor(case_when(manual_result == "Include" ~ "Include - No error",
+                                              manual_result == "Swapped-Recoding-Include-as-Weight" ~ "Include - Swapped-Recoding-Include-as-Weight",
+                                          manual_result == "Unit-Error-High" | manual_result == "Unit-Error-Low" ~ "Include - Corrected unit error",
+                                          manual_result == "Decimal-Error-Low" | manual_result == "Decimal-Error-High" ~ "Include - Corrected decimal point error",
+                                          manual_result == "Carried-Forward" ~ "Duplicate - Carried forward",
+                                          manual_result == "Same-Day" ~ "Duplicate - Same day",
+                                          manual_result == "Exclude - Z-Score" ~ "Exclude - Z-score",
+                                          manual_result == "Zero-or-negative-height" ~ "Missing - Zero or negative recording",
+                                          manual_result == "Negative-age" ~ "Missing - Negative age"),
+                                levels = c("Include - No error", "Include - Swapped-Recoding-Include-as-Weight", "Include - Corrected unit error", "Include - Corrected decimal point error", "Duplicate - Carried forward", "Duplicate - Same day", "Exclude - Z-score", "Missing - Zero or negative recording", "Missing - Negative age")))
+
+data_height_original |> 
+  select(manual_result_fct) |> 
+  tbl_summary()
+
+
+### Growthcleanr
+
+data_height_original <- data_height_original |> 
+  mutate(growthcleanr_result_fct = factor(case_when(growthcleanr_result == "Include" ~ "Include - No error",
+                                              growthcleanr_result == "Swapped-Measurements" ~ "Include - Corrected swapped measurements",
+                                              growthcleanr_result == "Carried-Forward" ~ "Duplicate - Carried forward",
+                                              growthcleanr_result == "Same-Day" ~ "Duplicate - Same day",
+                                              growthcleanr_result == "Longitudinal-Outlier" ~ "Exclude - Longitudinal outlier",
+                                              growthcleanr_result == "Single-Outlier" | growthcleanr_result == "Exclude - Extreme-Outlier" ~ "Exclude - Single outlier",
+                                              growthcleanr_result == "Missing" ~ "Missing"),
+                                levels = c("Include - No error", "Include - Corrected swapped measurements", "Duplicate - Carried forward", "Duplicate - Same day", "Exclude - Longitudinal outlier", "Exclude - Single outlier", "Missing")))
+
+data_height_original |> 
+  select(growthcleanr_result_fct) |> 
+  tbl_summary()
+
+
+### Combined
+
+data_height_original <- data_height_original |> 
+  mutate(combined_result_fct = factor(combined_result,
+                                      levels = c("Include - No-Error", "Include - Corrected-Unit-Error", "Include - Corrected-Decimal-Error", "Include - Swapped-Recoding-Include-as-Weight", "Carried-Forward", "Same-Day", "Exclude - Longitudinal-Outlier", "Exclude - Single-Outlier", "Exclude - Z-Score", "Missing - Recording", "Missing - Age")))
+
+data_height_original |> 
+  select(combined_result_fct) |> 
+  tbl_summary()
+
+
+```
+
+#### Weight
+
+```{r}
+
+### Manual result
+
+data_weight_original <- data_weight_original |> 
+  mutate(manual_result_fct = factor(case_when(manual_result == "Include" ~ "Include - No error",
+                                              manual_result == "Swapped-Recoding-Include-as-Height" ~ "Include - Swapped-Recoding-Include-as-Height",
+                                          manual_result == "Unit-Error-High" | manual_result == "Unit-Error-Low" ~ "Include - Corrected unit error",
+                                          manual_result == "Decimal-Error-Low1" | manual_result == "Decimal-Error-Low2" | manual_result == "Decimal-Error-High1" | manual_result == "Decimal-Error-High2" ~ "Include - Corrected decimal point error",
+                                          manual_result == "Carried-Forward" ~ "Duplicate - Carried forward",
+                                          manual_result == "Same-Day" ~ "Duplicate - Same day",
+                                          manual_result == "Exclude - Z-Score" ~ "Exclude - Z-score",
+                                          manual_result == "Zero-or-negative-weight" ~ "Missing - Zero or negative recording",
+                                          manual_result == "Negative-age" ~ "Missing - Negative age"),
+                                levels = c("Include - No error", "Include - Swapped-Recoding-Include-as-Height", "Include - Corrected unit error", "Include - Corrected decimal point error", "Duplicate - Carried forward", "Duplicate - Same day", "Exclude - Z-score", "Missing - Zero or negative recording", "Missing - Negative age")))
+
+data_weight_original |> 
+  select(manual_result_fct) |> 
+  tbl_summary()
+
+
+### Growthcleanr
+
+data_weight_original <- data_weight_original |> 
+  mutate(growthcleanr_result_fct = factor(case_when(growthcleanr_result == "Include" ~ "Include - No error",
+                                              growthcleanr_result == "Swapped-Measurements" ~ "Include - Corrected swapped measurements",
+                                              growthcleanr_result == "Carried-Forward" ~ "Duplicate - Carried forward",
+                                              growthcleanr_result == "Same-Day" ~ "Duplicate - Same day",
+                                              growthcleanr_result == "Longitudinal-Outlier" ~ "Exclude - Longitudinal outlier",
+                                              growthcleanr_result == "Single-Outlier" | growthcleanr_result == "Exclude - Extreme-Outlier" ~ "Exclude - Single outlier",
+                                              growthcleanr_result == "Missing" ~ "Missing"),
+                                levels = c("Include - No error", "Include - Corrected swapped measurements", "Duplicate - Carried forward", "Duplicate - Same day", "Exclude - Longitudinal outlier", "Exclude - Single outlier", "Missing")))
+
+data_weight_original |> 
+  select(growthcleanr_result_fct) |> 
+  tbl_summary()
+
+
+### Combined
+
+data_weight_original <- data_weight_original |> 
+  mutate(combined_result_fct = factor(combined_result,
+                                      levels = c("Include - No-Error", "Include - Corrected-Unit-Error", "Include - Corrected-Decimal-Error", "Include - Swapped-Recoding-Include-as-Height", "Carried-Forward", "Same-Day", "Exclude - Longitudinal-Outlier", "Exclude - Single-Outlier", "Exclude - Z-Score", "Missing - Recording", "Missing - Age")))
+
+data_weight_original |> 
+  select(combined_result_fct) |> 
+  tbl_summary()
+
+
+```
+
+#### Head circumference
+
+```{r}
+
+
+data_head <- data_head |> 
+  mutate(manual_result_fct = factor(case_when(manual_result == "Include" ~ "Include - No error",
+                                          manual_result == "Unit-Error-High" | manual_result == "Unit-Error-Low" ~ "Include - Corrected unit error",
+                                          manual_result == "Decimal-Error-Low" | manual_result == "Decimal-Error-High" ~ "Include - Corrected decimal point error",
+                                          manual_result == "Carried-Forward" ~ "Duplicate - Carried forward",
+                                          manual_result == "Same-Day" ~ "Duplicate - Same day",
+                                          manual_result == "Exclude - Z-Score" ~ "Exclude - Z-score",
+                                          manual_result == "Zero-or-negative-circumference" ~ "Missing - Zero or negative recording",
+                                          manual_result == "Negative-age" ~ "Missing - Negative age"),
+                                levels = c("Include - No error", "Include - Corrected unit error", "Include - Corrected decimal point error", "Duplicate - Carried forward", "Duplicate - Same day", "Exclude - Z-score", "Missing - Zero or negative recording", "Missing - Negative age")))
+
+data_head |> 
+  select(manual_result_fct) |> 
+  tbl_summary()
+
+```
+
+#### BMI
+
+```{r}
+
+data_bmi <- data_bmi |> 
+  mutate(combined_result_fct = factor(case_when(combined_result_weight == "Missing - Recording" | combined_result_height == "Missing - Recording" ~ "Missing - Recording",
+                                                combined_result_weight == "Missing - Age" | combined_result_height == "Missing - Age" ~ "Missing - Age",
+                                                combined_result_weight == "Exclude - Longitudinal-Outlier" | combined_result_height == "Exclude - Longitudinal-Outlier" ~ "Exclude - Longitudinal-Outlier",
+                                                combined_result_weight == "Exclude - Single-Outlier" | combined_result_height == "Exclude - Single-Outlier" ~ "Exclude - Single-Outlier",
+                                                combined_result_weight == "Exclude - Z-Score" | combined_result_height == "Exclude - Z-Score" ~ "Exclude - Z-Score height or weight",
+                                                z_bmi_braegger < (-5) | z_bmi_braegger > 8 ~ "Exclude - Z-Score BMI",
+                                                combined_result_weight == "Carried-Forward" | combined_result_height == "Carried-Forward" ~ "Carried-Forward",
+                                                combined_result_weight == "Same-Day" | combined_result_height == "Same-Day" ~ "Same-Day",
+                                                combined_result_weight == "Include - Swapped-Recoding-Include-as-Weight" | combined_result_height == "Include - Swapped-Recoding-Include-as-Height" ~ "Include - Corrected-Swapped-Recording",
+                                                combined_result_weight == "Include - Corrected-Unit-Error" | combined_result_height == "Include - Corrected-Unit-Error" ~ "Include - Corrected-Unit-Error",
+                                                combined_result_weight == "Include - Corrected-Decimal-Error" | combined_result_height == "Include - Corrected-Decimal-Error" ~ "Include - Corrected-Decimal-Error",
+                                                combined_result_weight == "Include - No-Error" | combined_result_height == "Include - No-Error" ~ "Include - No-Error"),
+                                      levels = c("Include - No-Error", "Include - Corrected-Unit-Error", "Include - Corrected-Decimal-Error", "Include - Corrected-Swapped-Recording", "Carried-Forward", "Same-Day", "Exclude - Longitudinal-Outlier", "Exclude - Single-Outlier", "Exclude - Z-Score height or weight", "Exclude - Z-Score BMI", "Missing - Recording", "Missing - Age")))
+
+data_bmi |> 
+  select(combined_result_fct) |> 
+  tbl_summary()
+
+```
+
+# Descriptive
+
+## Descriptive data check
+
+```{r}
+
+data_participant |> plot_histogram()
+
+data_participant |> plot_bar()
+
+```
+
+Visit data
+
+```{r}
+
+data_visit_week |> select(visit_week_type, visit_week_start_datetime, visit_week_end_datetime, age_years_visit_week_start, age_group) |>  plot_histogram()
+data_visit_week |> select(visit_week_type, visit_week_start_datetime, visit_week_end_datetime, age_years_visit_week_start, age_group) |>  plot_bar()
+
+```
+
+
+
+Diagnosis data
+
+```{r}
+
+data_diagnoses |> plot_histogram()
+data_diagnoses |> plot_bar()
+
+```
+
+Anthro data
+
+```{r}
+
+data_height_original |> plot_histogram()
+data_height_original |> plot_bar()
+
+```
+
+```{r}
+
+data_weight_original |> plot_histogram()
+data_weight_original |> plot_bar()
+
+```
+
+
+
+## Administrative
+
+Number of participants from each hub
+
+```{r}
+
+data_participant |> 
+  select(hospital_coded) |> 
+  tbl_summary()
+
+```
+
+
+
+```{r}
+
+data_participant |> 
+  select(sex, nationality_group, nationality_group_short, swiss_sep_3, swiss_sep_3_quintile, hospital_coded, general_consent, number_outpatient_visits, number_ER_visits, number_inpatient_stays) |>
+  mutate(number_outpatient_visits = case_when(is.na(number_outpatient_visits) ~ 0,
+                                              TRUE ~ number_outpatient_visits),
+         number_ER_visits = case_when(is.na(number_ER_visits) ~ 0,
+                                              TRUE ~ number_ER_visits),
+         number_inpatient_stays = case_when(is.na(number_inpatient_stays) ~ 0,
+                                              TRUE ~ number_inpatient_stays)) |> 
+  tbl_summary(type = list(c("number_ER_visits", "number_outpatient_visits", "number_inpatient_stays") ~ "continuous2",
+                          all_continuous() ~ "continuous2"),
+              statistic = all_continuous2() ~ c("{median} ({p25}, {p75})", "{min}, {max}"),
+              missing = "ifany",
+              missing_stat = "{N_miss} ({p_miss}%)",
+              percent = "column",
+              digits = all_categorical() ~ 0)
+
+```
+
+
+
+
+## Clinical
+
+
+Diagnoses
+
+```{r}
+
+data_diagnoses |> 
+  select(age_years_diagnosis, diagnosis_affecting_growth) |> 
+  tbl_summary()
+
+data_diagnoses |>
+  select(age_years_diagnosis) |> 
+  plot_histogram()
+
+```
+
+## Anthropometric
+
+Body Height
+
+```{r}
+
+data_height_original |> 
+  select(hospital_coded, height_cm, height_datetime, age_years_height) |> 
+  tbl_summary(by = "hospital_coded",
+              missing = "ifany",
+              missing_stat = "{N_miss} ({p_miss}%)") |> 
+  add_overall()
+
+data_height_original |> 
+  select(height_cm, height_datetime, age_years_height) |> 
+  mutate(height_datetime = year(height_datetime)) |> 
+  plot_histogram()
+
+data_height_original_SwissPedGrowth |> 
+  select(hospital_coded, height_cm, height_datetime, age_years_height) |> 
+  tbl_summary(by = "hospital_coded",
+              missing = "ifany",
+              missing_stat = "{N_miss} ({p_miss}%)") |> 
+  add_overall()
+
+data_height_original_SwissPedGrowth |> 
+  select(height_cm, height_datetime, age_years_height) |> 
+  mutate(height_datetime = year(height_datetime)) |> 
+  plot_histogram()
+
+```
+
+
+Body Weight
+
+```{r}
+
+data_weight_original |> 
+  select(hospital_coded, weight_kg, weight_datetime, age_years_weight) |> 
+  tbl_summary(by = "hospital_coded",
+              missing = "ifany",
+              missing_stat = "{N_miss} ({p_miss}%)") |> 
+  add_overall()
+
+data_weight_original |> 
+  select(weight_kg, weight_datetime, age_years_weight) |> 
+  mutate(weight_datetime = year(weight_datetime)) |> 
+  plot_histogram()
+
+data_weight_original_SwissPedGrowth |> 
+  select(hospital_coded, weight_kg, weight_datetime, age_years_weight) |> 
+  tbl_summary(by = "hospital_coded",
+              missing = "ifany",
+              missing_stat = "{N_miss} ({p_miss}%)") |> 
+  add_overall()
+
+data_weight_original_SwissPedGrowth |> 
+  select(weight_kg, weight_datetime, age_years_weight) |> 
+  mutate(weight_datetime = year(weight_datetime)) |> 
+  plot_histogram()
+
+```
+
+Body Mass Index
+
+```{r}
+
+data_bmi |> 
+  select(hospital_coded, bmi, bmi_datetime, age_years_bmi) |> 
+  tbl_summary(by = "hospital_coded",
+              missing = "ifany",
+              missing_stat = "{N_miss} ({p_miss}%)") |> 
+  add_overall()
+
+data_bmi |> 
+  select(bmi, bmi_datetime, age_years_bmi) |> 
+  mutate(bmi_datetime = years(bmi_datetime)) |> 
+  plot_histogram()
+
+
+data_bmi_SwissPedGrowth |> 
+  select(hospital_coded, bmi, bmi_datetime, age_years_bmi) |> 
+  tbl_summary(by = "hospital_coded",
+              missing = "ifany",
+              missing_stat = "{N_miss} ({p_miss}%)") |> 
+  add_overall()
+
+data_bmi_SwissPedGrowth |> 
+  select(bmi, bmi_datetime, age_years_bmi) |> 
+  mutate(bmi_datetime = years(bmi_datetime)) |> 
+  plot_histogram()
+
+
+
+```
+
+# Main analysis
+
+## Table 1: Participant's characteristics
+
+```{r}
+
+data_participant |> select(swiss_sep_3) |> plot_histogram()
+
+data_participant |> 
+  select(sex, nationality_group_short, swiss_sep_3, swiss_sep_3_quintile, hospital, general_consent, ER_visit, number_ER_visits, outpatient_visit, number_outpatient_visits, inpatient_stay, number_inpatient_stays, age_years_SwissPedGrowth_start) |>
+  tbl_summary(type = list(c("number_ER_visits", "number_outpatient_visits", "number_inpatient_stays") ~ "continuous2",
+                          all_continuous() ~ "continuous2"),
+              statistic = all_continuous2() ~ c("{mean} ({sd})", "{median} ({p25}, {p75})", "{min}, {max}"),
+              missing = "ifany",
+              missing_stat = "{N_miss} ({p_miss}%)",
+              percent = "column",
+              digits = list(all_categorical() ~ 0,
+                            all_continuous() ~ 1))
+
+```
+
+
+
+### eTable: Nationalities
+
+```{r}
+
+nationality_table <- data_participant |> 
+  count(nationality) |> 
+  filter(is.na(nationality)==FALSE) |> 
+  mutate(total = sum(n),
+         percent = n/total*100)
+
+nationality_table |> arrange(desc(n)) |>  filter(n >= 900)
+
+```
+
+## Representativeness of general population
+
+### eTable: 2017 Comparison of SwissPedGrowth population with general population
+
+Summary statistics before weighting
+
+```{r}
+
+data_participant_2017 <- data_participant |> 
+  left_join(data_visit_week |> mutate(visit_week_year = year(visit_week_start_datetime)) |>  filter(visit_week_year == 2017) |> group_by(participant_id) |> slice(1) |> select(participant_id, visit_week_year), by = "participant_id") |> 
+  filter(!is.na(visit_week_year))
+
+data_participant_2017 <- data_participant_2017 |> 
+  mutate(age_2017 = floor(as.numeric(difftime(ymd("2017-12-31"), birth_date, units = "days"))/365.25)) |> 
+  mutate(age_group_2017 = case_when(age_2017 < 1 ~ "Infancy: <1",
+                               age_2017 < 6 ~ "Preschool age: 1–5",
+                               age_2017 < 12 ~ "School age: 6–11",
+                               age_2017 < 16 ~ "Early adolescence: 12–15",
+                               age_2017 >= 16 ~ "Late adolescence: 16–19")) |> 
+  mutate(age_group_2017 = factor(age_group_2017, levels = c("Infancy: <1", "Preschool age: 1–5", "School age: 6–11", "Early adolescence: 12–15", "Late adolescence: 16–19")))
+
+
+data_participant_2017 |> 
+  select(age_2017, age_group_2017, sex, nationality_group_short, swiss_sep_3, swiss_sep_3_quintile) |>
+  tbl_summary(type = list(all_continuous() ~ "continuous2"),
+              statistic = all_continuous2() ~ c("{mean} ({sd})", "{median} ({p25}, {p75})", "{min}, {max}"),
+              missing = "ifany",
+              missing_stat = "{N_miss} ({p_miss}%)",
+              percent = "column",
+              digits = list(all_categorical() ~ 0,
+                            all_continuous() ~ 1))
+
+Genpop_summary_statistics_2017 |>  
+  mutate(percentage = n/total*100)
+
+
+
+
+
+```
+
+Standardized difference before weighting
+
+```{r}
+
+Genpop_summary_statistics_2017 <- Genpop_summary_statistics_2017 |> 
+  select(-c(Mean, SD)) |> 
+  filter(Group != "Mean (SD)") |> 
+  rename("n_genpop" = "n", "total_genpop" = "total") |> 
+  mutate(proportion_genpop = n_genpop/total_genpop)
+
+
+
+table_participant_2017 <- data_participant_2017 |> 
+  select(age_2017, age_group_2017, sex, nationality_group_short, swiss_sep_3, swiss_sep_3_quintile) |>
+  tbl_summary(type = list(all_continuous() ~ "continuous2"),
+              statistic = all_continuous2() ~ c("{median} ({p25}, {p75})", "{min}, {max}"),
+              missing = "ifany",
+              missing_stat = "{N_miss} ({p_miss}%)",
+              percent = "column",
+              digits = all_categorical() ~ 5)
+
+
+table_participant_2017 <- table_participant_2017 |> 
+  as_tibble() |> 
+  rename("Group" = "**Characteristic**", "output" = "**N = 100,752**") |> 
+  mutate(Group = case_when(Group == "Infancy: <1" ~ "Infancy: <1",
+                           Group == "Preschool age: 1–5" ~ "Preschool age: 1–5",
+                           Group == "School age: 6–11" ~ "School age: 6–11",
+                           Group == "Early adolescence: 12–15" ~ "Early adolescence: 12–15",
+                           Group == "Late adolescence: 16–19" ~ "Late adolescence: 16–19",
+                           Group == "Male" ~ "Male",
+                           Group == "Female" ~ "Female",
+                           Group == "Swiss" ~ "Swiss",
+                           Group == "European" ~ "European",
+                           Group == "Non-European" ~ "Non-European",
+                           Group == "1" ~ "Quntile 1",
+                           Group == "2" ~ "Quntile 2",
+                           Group == "3" ~ "Quntile 3",
+                           Group == "4" ~ "Quntile 4",
+                           Group == "5" ~ "Quntile 5")) |> 
+  filter(!is.na(Group))
+
+
+table_participant_2017 <- table_participant_2017 |> 
+  separate(
+    col = output, 
+    into = c("n", "proportion"), 
+    sep = " \\("
+  ) |> 
+  mutate(
+    n = str_remove_all(n, ","),
+    proportion = str_remove_all(proportion, "[%\\)]")
+  ) |> 
+  mutate(
+    n = as.numeric(n),
+    proportion = as.numeric(proportion)
+  ) |> 
+  mutate(proportion = as.numeric(proportion)/100)
+
+table_participant_2017 <- table_participant_2017 |> 
+  rename("n_SwissPedGrowth" = "n", "proportion_SwissPedGrowth" = "proportion")
+
+
+standardized_difference_table <- Genpop_summary_statistics_2017 |>
+  left_join(table_participant_2017, by = "Group")
+
+
+standardized_difference_table <- standardized_difference_table |> 
+  mutate(SPD = 2*(asin(sqrt(proportion_SwissPedGrowth)) - asin(sqrt(proportion_genpop))))
+
+standardized_difference_table |> select(Group, proportion_SwissPedGrowth, proportion_genpop, SPD)
+
+```
+
+
+Weighting using raking and survey package
+
+
+```{r}
+
+# target margins of the genpop
+
+pop.age <- Genpop_summary_statistics_2017 |> 
+  filter(Variable == "Age") |> 
+  mutate(age = factor(Group,
+                      levels = c("Infancy: <1", "Preschool age: 1–5", "School age: 6–11", "Early adolescence: 12–15", "Late adolescence: 16–19"))) |> 
+  mutate(Freq = proportion_genpop) |> 
+  select(age, Freq)
+  
+pop.sex <- Genpop_summary_statistics_2017 |> 
+  filter(Variable == "Sex") |> 
+  mutate(sex = factor(Group,
+                      levels = c("Female", "Male"))) |> 
+  mutate(Freq = proportion_genpop) |> 
+  select(sex, Freq)
+
+pop.nationality <- Genpop_summary_statistics_2017 |> 
+  filter(Variable == "Nationality") |> 
+  filter(Group != "Missing") |> 
+  mutate(nationality = factor(Group,
+                      levels = c("Swiss", "European", "Non-European"))) |> 
+  mutate(Freq = proportion_genpop) |> 
+  select(nationality, Freq)
+
+
+pop.ssep <- Genpop_summary_statistics_2017 |> 
+  filter(Variable == "SSEP") |> 
+  mutate(swiss_sep_3_quintile = factor(Group,
+                                     levels = c("Quntile 1", "Quntile 2","Quntile 3","Quntile 4","Quntile 5"),
+                                     labels = c("1", "2", "3", "4", "5"))) |> 
+  mutate(Freq = proportion_genpop) |> 
+  select(swiss_sep_3_quintile, Freq)
+
+
+data_to_rake_2017 <- data_participant_2017 |> 
+  select(participant_id, age_group_2017, sex, nationality_group_short, swiss_sep_3_quintile) |> 
+  mutate(age = factor(age_group_2017,
+                      levels = c("Infancy: <1", "Preschool age: 1–5", "School age: 6–11", "Early adolescence: 12–15", "Late adolescence: 16–19"),
+                      labels = c("Infancy: <1", "Preschool age: 1–5", "School age: 6–11", "Early adolescence: 12–15", "Late adolescence: 16–19")),
+         sex = factor(sex,
+                      levels = c("Female", "Male")),
+         nationality = factor(nationality_group_short,
+                              levels = c("Swiss", "European", "Non-European")),
+         swiss_sep_3_quintile = factor(swiss_sep_3_quintile,
+                                     levels = c("1", "2", "3", "4", "5"))) |> 
+  select(participant_id, age, sex, nationality, swiss_sep_3_quintile) |> 
+  drop_na()
+
+
+
+data_raked_2017 <- rake(svydesign(ids = ~participant_id, data = data_to_rake_2017),
+                        sample.margins = list(~age, ~sex, ~nationality, ~swiss_sep_3_quintile),
+                        population.margins = list(pop.age, pop.sex, pop.nationality, pop.ssep))
+
+weights_2017 <- data.frame(participant_id = data_to_rake_2017$participant_id,
+                           stabilized_weight = weights(data_raked_2017)/mean(weights(data_raked_2017)))
+
+summary(weights_2017$stabilized_weight)
+
+
+# add weights back to data
+
+data_participant_2017 <- data_participant_2017 |> 
+  left_join(weights_2017, by = "participant_id")
+
+```
+
+
+Summary statistics after weighting
+
+```{r}
+
+svydesign(id = ~1, data = data_participant_2017 |> filter(!is.na(stabilized_weight)), weights = ~stabilized_weight) |> 
+  as_survey() |> 
+  select(age_2017, age_group_2017, sex, nationality_group_short, swiss_sep_3, swiss_sep_3_quintile) |>
+  tbl_svysummary(type = list(all_continuous() ~ "continuous2"),
+              statistic = list(all_continuous2() ~ c("{mean} ({sd})", "{median} ({p25}, {p75})", "{min}, {max}"),
+                               all_categorical() ~ c("{n_unweighted} ({p})")),
+              missing = "ifany",
+              missing_stat = "{N_miss} ({p_miss}%)",
+              percent = "column",
+              digits = list(all_categorical() ~ 0,
+                            all_continuous() ~ 1))
+
+
+```
+
+
+Standardized difference after weighting
+
+```{r}
+
+table_participant_2017 <- svydesign(id = ~1, data = data_participant_2017 |> filter(!is.na(stabilized_weight)), weights = ~stabilized_weight) |> 
+  as_survey() |> 
+  select(age_group_2017, sex, nationality_group_short, swiss_sep_3_quintile) |>
+  tbl_svysummary(type = list(all_continuous() ~ "continuous2"),
+              statistic = list(all_continuous2() ~ c("{mean} ({sd})", "{median} ({p25}, {p75})", "{min}, {max}"),
+                               all_categorical() ~ c("{n_unweighted} ({p})")),
+              missing = "ifany",
+              missing_stat = "{N_miss} ({p_miss}%)",
+              percent = "column",
+              digits = list(all_categorical() ~ 5,
+                            all_continuous() ~ 1))
+
+
+table_participant_2017 <- table_participant_2017 |> 
+  as_tibble() |> 
+  rename("Group" = "**Characteristic**", "output" = "**N = 85,750**") |> 
+  mutate(Group = case_when(Group == "Infancy: <1" ~ "Infancy: <1",
+                           Group == "Preschool age: 1–5" ~ "Preschool age: 1–5",
+                           Group == "School age: 6–11" ~ "School age: 6–11",
+                           Group == "Early adolescence: 12–15" ~ "Early adolescence: 12–15",
+                           Group == "Late adolescence: 16–19" ~ "Late adolescence: 16–19",
+                           Group == "Male" ~ "Male",
+                           Group == "Female" ~ "Female",
+                           Group == "Swiss" ~ "Swiss",
+                           Group == "European" ~ "European",
+                           Group == "Non-European" ~ "Non-European",
+                           Group == "Missing" ~ "Missing",
+                           Group == "1" ~ "Quntile 1",
+                           Group == "2" ~ "Quntile 2",
+                           Group == "3" ~ "Quntile 3",
+                           Group == "4" ~ "Quntile 4",
+                           Group == "5" ~ "Quntile 5")) |> 
+  filter(!is.na(Group))
+
+
+table_participant_2017 <- table_participant_2017 |> 
+  separate(
+    col = output, 
+    into = c("n", "proportion"), 
+    sep = " \\("
+  ) |> 
+  mutate(
+    n = str_remove_all(n, ","),
+    proportion = str_remove_all(proportion, "[%\\)]")
+  ) |> 
+  mutate(
+    n = as.numeric(n),
+    proportion = as.numeric(proportion)
+  ) |> 
+  mutate(proportion = as.numeric(proportion)/100)
+
+table_participant_2017 <- table_participant_2017 |> 
+  rename("n_SwissPedGrowth" = "n", "proportion_SwissPedGrowth" = "proportion")
+
+
+standardized_difference_table <- Genpop_summary_statistics_2017 |>
+  left_join(table_participant_2017, by = "Group")
+
+
+standardized_difference_table <- standardized_difference_table |> 
+  mutate(SPD = 2*(asin(sqrt(proportion_SwissPedGrowth)) - asin(sqrt(proportion_genpop))))
+
+standardized_difference_table |> select(Group, proportion_SwissPedGrowth, proportion_genpop, SPD) |> mutate(across(where(is.numeric), \(x) format(x, scientific = FALSE)))
+
+```
+
+
+
+
+
+
+### eTable: 2023 Comparison of SwissPedGrowth population with general population
+
+Summary statistics before weighting
+
+```{r}
+
+data_participant_2023 <- data_participant |> 
+  left_join(data_visit_week |> mutate(visit_week_year = year(visit_week_start_datetime)) |>  filter(visit_week_year == 2023) |> group_by(participant_id) |> slice(1) |> select(participant_id, visit_week_year), by = "participant_id") |> 
+  filter(!is.na(visit_week_year))
+
+data_participant_2023 <- data_participant_2023 |> 
+  mutate(age_2023 = floor(as.numeric(difftime(ymd("2023-12-31"), birth_date, units = "days"))/365.25)) |> 
+  mutate(age_group_2023 = case_when(age_2023 < 1 ~ "Infancy: <1",
+                               age_2023 < 6 ~ "Preschool age: 1–5",
+                               age_2023 < 12 ~ "School age: 6–11",
+                               age_2023 < 16 ~ "Early adolescence: 12–15",
+                               age_2023 >= 16 ~ "Late adolescence: 16–19")) |> 
+  mutate(age_group_2023 = factor(age_group_2023, levels = c("Infancy: <1", "Preschool age: 1–5", "School age: 6–11", "Early adolescence: 12–15", "Late adolescence: 16–19")))
+
+
+data_participant_2023 |> 
+  select(age_2023, age_group_2023, sex, nationality_group_short, swiss_sep_3, swiss_sep_3_quintile) |>
+  tbl_summary(type = list(all_continuous() ~ "continuous2"),
+              statistic = all_continuous2() ~ c("{mean} ({sd})", "{median} ({p25}, {p75})", "{min}, {max}"),
+              missing = "ifany",
+              missing_stat = "{N_miss} ({p_miss}%)",
+              percent = "column",
+              digits = list(all_categorical() ~ 0,
+                            all_continuous() ~ 1))
+
+Genpop_summary_statistics_2023 |>  
+  mutate(percentage = n/total*100)
+
+
+
+
+
+```
+
+Standardized difference before weighting
+
+```{r}
+
+Genpop_summary_statistics_2023 <- Genpop_summary_statistics_2023 |> 
+  select(-c(Mean, SD)) |> 
+  filter(Group != "Mean (SD)") |> 
+  rename("n_genpop" = "n", "total_genpop" = "total") |> 
+  mutate(proportion_genpop = n_genpop/total_genpop)
+
+
+
+table_participant_2023 <- data_participant_2023 |> 
+  select(age_2023, age_group_2023, sex, nationality_group_short, swiss_sep_3, swiss_sep_3_quintile) |>
+  tbl_summary(type = list(all_continuous() ~ "continuous2"),
+              statistic = all_continuous2() ~ c("{median} ({p25}, {p75})", "{min}, {max}"),
+              missing = "ifany",
+              missing_stat = "{N_miss} ({p_miss}%)",
+              percent = "column",
+              digits = all_categorical() ~ 5)
+
+
+table_participant_2023 <- table_participant_2023 |> 
+  as_tibble() |> 
+  rename("Group" = "**Characteristic**", "output" = "**N = 89,500**") |> 
+  mutate(Group = case_when(Group == "Infancy: <1" ~ "Infancy: <1",
+                           Group == "Preschool age: 1–5" ~ "Preschool age: 1–5",
+                           Group == "School age: 6–11" ~ "School age: 6–11",
+                           Group == "Early adolescence: 12–15" ~ "Early adolescence: 12–15",
+                           Group == "Late adolescence: 16–19" ~ "Late adolescence: 16–19",
+                           Group == "Male" ~ "Male",
+                           Group == "Female" ~ "Female",
+                           Group == "Swiss" ~ "Swiss",
+                           Group == "European" ~ "European",
+                           Group == "Non-European" ~ "Non-European",
+                           Group == "1" ~ "Quntile 1",
+                           Group == "2" ~ "Quntile 2",
+                           Group == "3" ~ "Quntile 3",
+                           Group == "4" ~ "Quntile 4",
+                           Group == "5" ~ "Quntile 5")) |> 
+  filter(!is.na(Group))
+
+
+table_participant_2023 <- table_participant_2023 |> 
+  separate(
+    col = output, 
+    into = c("n", "proportion"), 
+    sep = " \\("
+  ) |> 
+  mutate(
+    n = str_remove_all(n, ","),
+    proportion = str_remove_all(proportion, "[%\\)]")
+  ) |> 
+  mutate(
+    n = as.numeric(n),
+    proportion = as.numeric(proportion)
+  ) |> 
+  mutate(proportion = as.numeric(proportion)/100)
+
+table_participant_2023 <- table_participant_2023 |> 
+  rename("n_SwissPedGrowth" = "n", "proportion_SwissPedGrowth" = "proportion")
+
+
+standardized_difference_table <- Genpop_summary_statistics_2023 |>
+  left_join(table_participant_2023, by = "Group")
+
+
+standardized_difference_table <- standardized_difference_table |> 
+  mutate(SPD = 2*(asin(sqrt(proportion_SwissPedGrowth)) - asin(sqrt(proportion_genpop))))
+
+standardized_difference_table |> select(Group, proportion_SwissPedGrowth, proportion_genpop, SPD)
+
+```
+
+
+Weighting using raking and survey package
+
+
+```{r}
+
+# target margins of the genpop
+
+pop.age <- Genpop_summary_statistics_2023 |> 
+  filter(Variable == "Age") |> 
+  mutate(age = factor(Group,
+                      levels = c("Infancy: <1", "Preschool age: 1–5", "School age: 6–11", "Early adolescence: 12–15", "Late adolescence: 16–19"))) |> 
+  mutate(Freq = proportion_genpop) |> 
+  select(age, Freq)
+  
+pop.sex <- Genpop_summary_statistics_2023 |> 
+  filter(Variable == "Sex") |> 
+  mutate(sex = factor(Group,
+                      levels = c("Female", "Male"))) |> 
+  mutate(Freq = proportion_genpop) |> 
+  select(sex, Freq)
+
+pop.nationality <- Genpop_summary_statistics_2023 |> 
+  filter(Variable == "Nationality") |> 
+  filter(Group != "Missing") |> 
+  mutate(nationality = factor(Group,
+                      levels = c("Swiss", "European", "Non-European"))) |> 
+  mutate(Freq = proportion_genpop) |> 
+  select(nationality, Freq)
+
+
+pop.ssep <- Genpop_summary_statistics_2023 |> 
+  filter(Variable == "SSEP") |> 
+  mutate(swiss_sep_3_quintile = factor(Group,
+                                     levels = c("Quntile 1", "Quntile 2","Quntile 3","Quntile 4","Quntile 5"),
+                                     labels = c("1", "2", "3", "4", "5"))) |> 
+  mutate(Freq = proportion_genpop) |> 
+  select(swiss_sep_3_quintile, Freq)
+
+
+data_to_rake_2023 <- data_participant_2023 |> 
+  select(participant_id, age_group_2023, sex, nationality_group_short, swiss_sep_3_quintile) |> 
+  mutate(age = factor(age_group_2023,
+                      levels = c("Infancy: <1", "Preschool age: 1–5", "School age: 6–11", "Early adolescence: 12–15", "Late adolescence: 16–19"),
+                      labels = c("Infancy: <1", "Preschool age: 1–5", "School age: 6–11", "Early adolescence: 12–15", "Late adolescence: 16–19")),
+         sex = factor(sex,
+                      levels = c("Female", "Male")),
+         nationality = factor(nationality_group_short,
+                              levels = c("Swiss", "European", "Non-European")),
+         swiss_sep_3_quintile = factor(swiss_sep_3_quintile,
+                                     levels = c("1", "2", "3", "4", "5"))) |> 
+  select(participant_id, age, sex, nationality, swiss_sep_3_quintile) |> 
+  drop_na()
+
+
+
+data_raked_2023 <- rake(svydesign(ids = ~participant_id, data = data_to_rake_2023),
+                        sample.margins = list(~age, ~sex, ~nationality, ~swiss_sep_3_quintile),
+                        population.margins = list(pop.age, pop.sex, pop.nationality, pop.ssep))
+
+weights_2023 <- data.frame(participant_id = data_to_rake_2023$participant_id,
+                           stabilized_weight = weights(data_raked_2023)/mean(weights(data_raked_2023)))
+
+summary(weights_2023$stabilized_weight)
+
+
+# add weights back to data
+
+data_participant_2023 <- data_participant_2023 |> 
+  left_join(weights_2023, by = "participant_id")
+
+```
+
+
+Summary statistics after weighting
+
+```{r}
+
+svydesign(id = ~1, data = data_participant_2023 |> filter(!is.na(stabilized_weight)), weights = ~stabilized_weight) |> 
+  as_survey() |> 
+  select(age_2023, age_group_2023, sex, nationality_group_short, swiss_sep_3, swiss_sep_3_quintile) |>
+  tbl_svysummary(type = list(all_continuous() ~ "continuous2"),
+              statistic = list(all_continuous2() ~ c("{mean} ({sd})", "{median} ({p25}, {p75})", "{min}, {max}"),
+                               all_categorical() ~ c("{n_unweighted} ({p})")),
+              missing = "ifany",
+              missing_stat = "{N_miss} ({p_miss}%)",
+              percent = "column",
+              digits = list(all_categorical() ~ 0,
+                            all_continuous() ~ 1))
+
+
+```
+
+
+Standardized difference after weighting
+
+```{r}
+
+table_participant_2023 <- svydesign(id = ~1, data = data_participant_2023 |> filter(!is.na(stabilized_weight)), weights = ~stabilized_weight) |> 
+  as_survey() |> 
+  select(age_group_2023, sex, nationality_group_short, swiss_sep_3_quintile) |>
+  tbl_svysummary(type = list(all_continuous() ~ "continuous2"),
+              statistic = list(all_continuous2() ~ c("{mean} ({sd})", "{median} ({p25}, {p75})", "{min}, {max}"),
+                               all_categorical() ~ c("{n_unweighted} ({p})")),
+              missing = "ifany",
+              missing_stat = "{N_miss} ({p_miss}%)",
+              percent = "column",
+              digits = list(all_categorical() ~ 5,
+                            all_continuous() ~ 1))
+
+
+table_participant_2023 <- table_participant_2023 |> 
+  as_tibble() |> 
+  rename("Group" = "**Characteristic**", "output" = "**N = 82,066**") |> 
+  mutate(Group = case_when(Group == "Infancy: <1" ~ "Infancy: <1",
+                           Group == "Preschool age: 1–5" ~ "Preschool age: 1–5",
+                           Group == "School age: 6–11" ~ "School age: 6–11",
+                           Group == "Early adolescence: 12–15" ~ "Early adolescence: 12–15",
+                           Group == "Late adolescence: 16–19" ~ "Late adolescence: 16–19",
+                           Group == "Male" ~ "Male",
+                           Group == "Female" ~ "Female",
+                           Group == "Swiss" ~ "Swiss",
+                           Group == "European" ~ "European",
+                           Group == "Non-European" ~ "Non-European",
+                           Group == "Missing" ~ "Missing",
+                           Group == "1" ~ "Quntile 1",
+                           Group == "2" ~ "Quntile 2",
+                           Group == "3" ~ "Quntile 3",
+                           Group == "4" ~ "Quntile 4",
+                           Group == "5" ~ "Quntile 5")) |> 
+  filter(!is.na(Group))
+
+
+table_participant_2023 <- table_participant_2023 |> 
+  separate(
+    col = output, 
+    into = c("n", "proportion"), 
+    sep = " \\("
+  ) |> 
+  mutate(
+    n = str_remove_all(n, ","),
+    proportion = str_remove_all(proportion, "[%\\)]")
+  ) |> 
+  mutate(
+    n = as.numeric(n),
+    proportion = as.numeric(proportion)
+  ) |> 
+  mutate(proportion = as.numeric(proportion)/100)
+
+table_participant_2023 <- table_participant_2023 |> 
+  rename("n_SwissPedGrowth" = "n", "proportion_SwissPedGrowth" = "proportion")
+
+
+standardized_difference_table <- Genpop_summary_statistics_2023 |>
+  left_join(table_participant_2023, by = "Group")
+
+
+standardized_difference_table <- standardized_difference_table |> 
+  mutate(SPD = 2*(asin(sqrt(proportion_SwissPedGrowth)) - asin(sqrt(proportion_genpop))))
+
+standardized_difference_table |> select(Group, proportion_SwissPedGrowth, proportion_genpop, SPD) |> mutate(across(where(is.numeric), \(x) format(x, scientific = FALSE)))
+
+```
+
+
+
+
+
+
+## Table 2: Visit's characteristics
+
+```{r}
+
+data_visit_week |> select(visit_week_type) |> tbl_summary()
+
+data_visit_week |> 
+  select(visit_week_type, sex, age_years_visit_week_start, age_group, nationality_group_short, swiss_sep_3, swiss_sep_3_quintile, hospital, general_consent, diagnosis_affecting_growth) |>
+  tbl_summary(by = "visit_week_type",
+              type = list(all_continuous() ~ "continuous2"),
+              statistic = list(all_continuous2() ~ c("{mean} ({sd})", "{median} ({p25}, {p75})", "{min}, {max}"),
+                               all_categorical() ~ c("{n} ({p})")),
+              missing = "ifany",
+              missing_stat = "{N_miss} ({p_miss})",
+              percent = "column",
+              digits = list(all_categorical() ~ 0,
+                            all_continuous() ~ 1)) |> 
+  add_overall()
+
+```
+
+Some inpatient visits don't have a diagnosis!
+
+```{r}
+
+
+data_case |> 
+  filter(case_carehandling == "Inpatient care") |> 
+  left_join(data_diagnoses |> select(diagnosis_affecting_growth, case_id) |> group_by(case_id) |> slice(1) |> ungroup(), by = "case_id") |> 
+  select(hospital, diagnosis_affecting_growth) |> 
+  tbl_summary(by = hospital)
+
+```
+
+
+## Aim 1: Availability
+
+Total number of measurements
+
+```{r}
+
+data_height_original |> 
+  select(height_id, hospital_coded) |> 
+  mutate(number_measurements = "Height") |> 
+  bind_rows(data_weight_original |> select(weight_id, hospital_coded) |> mutate(number_measurements = "Weight")) |> 
+  bind_rows(data_bmi |> select(weight_id, hospital_coded) |> mutate(number_measurements = "Body Mass Index")) |>
+  bind_rows(data_head |> select(circumference_id, hospital_coded) |> mutate(number_measurements = "Head circumference")) |> 
+  select(number_measurements, hospital_coded) |> 
+  tbl_summary(by = hospital_coded,
+              statistic = everything() ~ "{n}",
+              label = list(number_measurements = "Number of recorded values")) |> 
+  add_overall()
+
+```
+
+### eTable: Per patient
+
+
+```{r}
+data_participant |> 
+  select(height_measurement, number_height_measurements, weight_measurement, number_weight_measurements, head_measurement, number_head_measurements, bmi_measurement, number_bmi_measurements) |> 
+  tbl_summary(type = all_continuous() ~ "continuous2",
+              statistic = list(all_continuous2() ~ "{median} [{p25}, {p75}]",
+                               all_categorical() ~ "{n} ({p})"),
+              missing = "ifany",
+              missing_stat = "{N_miss} ({p_miss}%)")
+```
+
+
+### eTable: Per hospital visit
+
+```{r}
+
+data_visit_week |>  
+  select(visit_week_type, height_measurement, number_height_measurements, weight_measurement, number_weight_measurements, head_measurement, number_head_measurements, bmi_measurement, number_bmi_measurements) |> 
+  tbl_summary(by = "visit_week_type",
+              type = list(c("number_height_measurements", "number_weight_measurements", "number_head_measurements", "number_bmi_measurements") ~ "continuous2",
+                          all_continuous() ~ "continuous2"),
+              statistic = list(all_continuous2() ~ "{median} [{p25}, {p75}]",
+                               all_categorical() ~ "{n} ({p})"),
+              missing = "ifany",
+              missing_stat = "{N_miss} ({p_miss}%)") |> 
+  add_overall()
+
+```
+
+### eTable: Compare visit characteristis with and without measurement
+
+
+```{r}
+
+data_visit_week |>
+  mutate(height_measurement = case_when(height_measurement == "No height" ~ "No height",
+                                                    TRUE ~ "Height available")) |> 
+  select(height_measurement) |>
+  tbl_summary()
+
+data_visit_week |>
+  mutate(height_measurement = case_when(height_measurement == "No height" ~ "No height",
+                                                    TRUE ~ "Height available")) |> 
+  select(height_measurement, sex, age_years_visit_week_start, age_group, nationality_group_short, swiss_sep_3, swiss_sep_3_quintile, hospital_coded, general_consent, visit_week_type) |>
+  tbl_summary(by = "height_measurement",
+              type = list(all_continuous() ~ "continuous2"),
+              statistic = list(all_continuous2() ~ c("{mean} ({sd})", "{median} ({p25}, {p75})", "{min}, {max}"),
+                               all_categorical() ~ "{n} ({p})"),
+              missing = "ifany",
+              missing_stat = "{N_miss} ({p_miss}%)",
+              percent = "row",
+              digits = list(all_categorical() ~ 0,
+                            all_continuous() ~ 1)) |> 
+  add_p(test = list("swiss_sep_3" ~ "t.test",
+                    "age_years_visit_week_start" ~ "wilcox.test",
+                    all_categorical() ~ "chisq.test")) |> 
+  add_overall()
+
+```
+
+
+```{r}
+
+data_visit_week |>
+  mutate(weight_measurement = case_when(weight_measurement == "No weight" ~ "No weight",
+                                                    TRUE ~ "weight available")) |> 
+  select(weight_measurement) |>
+  tbl_summary()
+
+data_visit_week |>
+  mutate(weight_measurement = factor(case_when(weight_measurement == "No weight" ~ "No weight",
+                                                    TRUE ~ "Weight available"),
+                                     levels = c("Weight available", "No weight"))) |> 
+  select(weight_measurement, sex, age_years_visit_week_start, age_group, nationality_group_short, swiss_sep_3, swiss_sep_3_quintile, hospital_coded, general_consent, visit_week_type) |>
+  tbl_summary(by = "weight_measurement",
+              type = list(all_continuous() ~ "continuous2"),
+              statistic = list(all_continuous2() ~ c("{mean} ({sd})", "{median} ({p25}, {p75})", "{min}, {max}"),
+                               all_categorical() ~ "{n} ({p})"),
+              missing = "ifany",
+              missing_stat = "{N_miss} ({p_miss}%)",
+              percent = "row",
+              digits = list(all_categorical() ~ 0,
+                            all_continuous() ~ 1)) |> 
+  add_p(test = list("swiss_sep_3" ~ "t.test",
+                    "age_years_visit_week_start" ~ "wilcox.test",
+                    all_categorical() ~ "chisq.test")) |> 
+  modify_fmt_fun(
+    p.value = function(x) {
+      ifelse(
+        x < 0.0001, 
+        "<0.0001", 
+        format(round(x, 4), nsmall = 4))  # Show 4 decimal places
+    }
+  ) |> 
+  add_overall()
+
+```
+
+### Figure 1: Per visit by hospital, by visit type, by age group
+
+Height
+
+```{r}
+
+plot_data <- data_visit_week |>
+  mutate(height_measurement = case_when(number_height_measurements >= 1 ~ "yes",
+                                                TRUE ~ "no")) |>
+  select(hospital_coded, height_measurement, visit_week_type, age_group) |>
+  group_by(hospital_coded, visit_week_type, age_group) |>
+  count(height_measurement) |>
+  ungroup() |>
+  pivot_wider(names_from = height_measurement,
+              values_from = n,
+              values_fill = 0) |>
+  mutate(total = yes + no,
+         yes_prop = yes / total) |>
+  rowwise() |>
+  mutate(
+    ci = list(prop.test(yes, total)$conf.int),
+    ci_lower = ci[1],
+    ci_upper = ci[2]
+  ) |>
+  ungroup() |>
+  select(-ci)
+
+plot_height_by_hospital_coded_outpatient <- plot_data |> 
+  filter(visit_week_type == "Outpatient visit") |> 
+  ggplot(aes(x = hospital_coded, y = yes_prop, fill = age_group)) + 
+  geom_col(stat = "identity", position = position_dodge(width = 0.75), width = 0.75)+
+  geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper), position = position_dodge(width = 0.75), width = 0.5) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1), breaks = c(0, 0.25, 0.5, 0.75, 1), expand = c(0,0))+
+  scale_fill_manual(name = "Age group (years)",
+                    values = c("grey80", "grey60", "grey40", "grey20", "grey10"))+
+  labs(y = "Visits (%) with height",
+       x = "Hospital",
+       title = "Outpatient visit")+
+  theme_minimal()+
+  theme(panel.grid.major.x = element_blank(),
+        axis.text = element_text(color = "black", size = 8),
+        axis.title = element_text(color = "black", size = 8),
+        title = element_text(color = "black", size = 8, face = "bold"))
+
+plot_height_by_hospital_coded_outpatient
+
+plot_height_by_hospital_coded_ER <- plot_data |> 
+  filter(visit_week_type == "ER visit") |> 
+  ggplot(aes(x = hospital_coded, y = yes_prop, fill = age_group)) + 
+  geom_col(stat = "identity", position = position_dodge(width = 0.75), width = 0.75)+
+  geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper), position = position_dodge(width = 0.75), width = 0.5) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1), breaks = c(0, 0.25, 0.5, 0.75, 1), expand = c(0,0))+
+  scale_fill_manual(name = "Age group (years)",
+                    values = c("grey80", "grey60", "grey40", "grey20", "grey10"))+
+  labs(y = "Visits (%) with height",
+       x = "Hospital",
+       title = "Emergency visit")+
+  theme_minimal()+
+  theme(panel.grid.major.x = element_blank(),
+        axis.text = element_text(color = "black", size = 8),
+        axis.title = element_text(color = "black", size = 8),
+        title = element_text(color = "black", size = 8, face = "bold"))
+
+plot_height_by_hospital_coded_ER
+
+plot_height_by_hospital_coded_inpatient <- plot_data |> 
+  filter(visit_week_type == "Inpatient stay") |> 
+  ggplot(aes(x = hospital_coded, y = yes_prop, fill = age_group)) + 
+  geom_col(stat = "identity", position = position_dodge(width = 0.75), width = 0.75)+
+  geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper), position = position_dodge(width = 0.75), width = 0.5) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1), breaks = c(0, 0.25, 0.5, 0.75, 1), expand = c(0,0))+
+  scale_fill_manual(name = "Age group (years)",
+                    values = c("grey80", "grey60", "grey40", "grey20", "grey10"))+
+  labs(y = "Visits (%) with height",
+       x = "Hospital",
+       title = "Inpatient stay")+
+  theme_minimal()+
+  theme(panel.grid.major.x = element_blank(),
+        axis.text = element_text(color = "black", size = 8),
+        axis.title = element_text(color = "black", size = 8),
+        title = element_text(color = "black", size = 8, face = "bold"))
+
+plot_height_by_hospital_coded_inpatient
+
+
+
+
+```
+
+
+Weight
+
+```{r}
+
+plot_data <- data_visit_week |>
+  mutate(weight_measurement = case_when(number_weight_measurements >= 1 ~ "yes",
+                                                TRUE ~ "no")) |>
+  select(hospital_coded, weight_measurement, visit_week_type, age_group) |>
+  group_by(hospital_coded, visit_week_type, age_group) |>
+  count(weight_measurement) |>
+  ungroup() |>
+  pivot_wider(names_from = weight_measurement,
+              values_from = n,
+              values_fill = 0) |>
+  mutate(total = yes + no,
+         yes_prop = yes / total) |>
+  rowwise() |>
+  mutate(
+    ci = list(prop.test(yes, total)$conf.int),
+    ci_lower = ci[1],
+    ci_upper = ci[2]
+  ) |>
+  ungroup() |>
+  select(-ci)
+
+plot_weight_by_hospital_coded_outpatient <- plot_data |> 
+  filter(visit_week_type == "Outpatient visit") |> 
+  ggplot(aes(x = hospital_coded, y = yes_prop, fill = age_group)) + 
+  geom_col(stat = "identity", position = position_dodge(width = 0.75), width = 0.75)+
+  geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper), position = position_dodge(width = 0.75), width = 0.5) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1), breaks = c(0, 0.25, 0.5, 0.75, 1), expand = c(0,0))+
+  scale_fill_manual(values = c("grey80", "grey60", "grey40", "grey20", "grey10"))+
+  labs(y = "Visits (%) with weight",
+       x = "Hospital",
+       title = "Outpatient visit",
+       fill = "Age group (years)")+
+  theme_minimal()+
+  theme(panel.grid.major.x = element_blank(),
+        axis.text = element_text(color = "black", size = 8),
+        axis.title = element_text(color = "black", size = 8),
+        title = element_text(color = "black", size = 8, face = "bold"))
+
+plot_weight_by_hospital_coded_outpatient
+
+plot_weight_by_hospital_coded_ER <- plot_data |> 
+  filter(visit_week_type == "ER visit") |> 
+  ggplot(aes(x = hospital_coded, y = yes_prop, fill = age_group)) + 
+  geom_col(stat = "identity", position = position_dodge(width = 0.75), width = 0.75)+
+  geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper), position = position_dodge(width = 0.75), width = 0.5) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1), breaks = c(0, 0.25, 0.5, 0.75, 1), expand = c(0,0))+
+  scale_fill_manual(values = c("grey80", "grey60", "grey40", "grey20", "grey10"))+
+  labs(y = "Visits (%) with weight",
+       x = "Hospital",
+       title = "Emergency visit",
+       fill = "Age group (years)")+
+  theme_minimal()+
+  theme(panel.grid.major.x = element_blank(),
+        axis.text = element_text(color = "black", size = 8),
+        axis.title = element_text(color = "black", size = 8),
+        title = element_text(color = "black", size = 8, face = "bold"))
+
+plot_weight_by_hospital_coded_ER
+
+plot_weight_by_hospital_coded_inpatient <- plot_data |> 
+  filter(visit_week_type == "Inpatient stay") |> 
+  ggplot(aes(x = hospital_coded, y = yes_prop, fill = age_group)) + 
+  geom_col(stat = "identity", position = position_dodge(width = 0.75), width = 0.75)+
+  geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper), position = position_dodge(width = 0.75), width = 0.5) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1), breaks = c(0, 0.25, 0.5, 0.75, 1), expand = c(0,0))+
+  scale_fill_manual(values = c("grey80", "grey60", "grey40", "grey20", "grey10"))+
+  labs(y = "Stays (%) with weight",
+       x = "Hospital",
+       title = "Inpatient stay",
+       fill = "Age group (years)")+
+  theme_minimal()+
+  theme(panel.grid.major.x = element_blank(),
+        axis.text = element_text(color = "black", size = 8),
+        axis.title = element_text(color = "black", size = 8),
+        title = element_text(color = "black", size = 8, face = "bold"),
+        legend.position = "bottom",
+        legend.key.height = unit(0.5, "cm"),
+        legend.key.width = unit(0.25, "cm"))
+
+plot_weight_by_hospital_coded_inpatient
+
+```
+
+
+Combined
+
+```{r}
+
+plot_height_availability_per_visit_by_hospital_coded <- plot_grid(plotlist = c(plot_height_by_hospital_coded_outpatient + theme(legend.position = "None"),
+                                                                    plot_height_by_hospital_coded_ER + theme(legend.position = "None"),
+                                                                    plot_height_by_hospital_coded_inpatient + theme(legend.position = "None")),
+                                                       ncol = 1)
+
+plot_weight_availability_per_visit_by_hospital_coded <- plot_grid(plotlist = c(plot_weight_by_hospital_coded_outpatient + theme(legend.position = "None"),
+                                                                    plot_weight_by_hospital_coded_ER + theme(legend.position = "None"),
+                                                                    plot_weight_by_hospital_coded_inpatient + theme(legend.position = "None")),
+                                                       ncol = 1)
+
+plot_availability_per_visit_by_hospital_coded <- plot_grid(plotlist = c(plot_height_availability_per_visit_by_hospital_coded + theme(plot.margin = margin(t = 1, r = 0, b = 0, l = 0, unit = "cm")),
+                                                                    plot_weight_availability_per_visit_by_hospital_coded+ theme(plot.margin = margin(t = 1, r = 0, b = 0, l = 0, unit = "cm"))),
+                                                       ncol = 2,
+                                                       labels = c("Height", "Weight"),
+                                                       label_x = 0.5,
+                                                       hjust = 0.5)
+
+plot_availability_per_visit_by_hospital_coded
+
+get_legend2 <- function(a.gplot){
+  if (!gtable::is.gtable(a.gplot))
+    a.gplot <- ggplotGrob(a.gplot)
+  leg <- which(sapply(a.gplot$grobs, function(x) x$name) == "guide-box")
+  a.gplot$grobs[[leg]]
+}
+
+plot_legend <- get_legend2(plot_weight_by_hospital_coded_inpatient + theme(legend.position = "bottom",
+                                                                           legend.title.position ="top",
+                                                                           legend.title = element_text(hjust = 0.5)))
+
+plot_availability_per_visit_by_hospital_coded_with_legend <- plot_grid(plotlist = list(plot_availability_per_visit_by_hospital_coded,
+                                                                              plot_legend),
+                                                                 ncol = 1,
+                                                                 rel_heights = c(1, 0.1))
+
+plot_availability_per_visit_by_hospital_coded_with_legend
+
+ggsave(plot_availability_per_visit_by_hospital_coded_with_legend, filename = here("output", "figures", "plot_availability_per_visit_by_hospital_coded_with_legend.svg"), width = 18, height = 22, units = "cm")
+
+
+```
+
+
+#### eFigure: HC and BMI by hospital_coded, visity type, age group
+
+HC
+
+```{r}
+
+plot_data <- data_visit_week |>
+  mutate(head_measurement = case_when(number_head_measurements >= 1 ~ "yes",
+                                                TRUE ~ "no")) |>
+  select(hospital_coded, head_measurement, visit_week_type, age_group) |>
+  group_by(hospital_coded, visit_week_type, age_group) |>
+  count(head_measurement) |>
+  ungroup() |>
+  pivot_wider(names_from = head_measurement,
+              values_from = n,
+              values_fill = 0) |>
+  mutate(total = yes + no,
+         yes_prop = yes / total) |>
+  rowwise() |>
+  mutate(
+    ci = list(prop.test(yes, total)$conf.int),
+    ci_lower = ci[1],
+    ci_upper = ci[2]
+  ) |>
+  ungroup() |>
+  select(-ci)
+
+plot_head_by_hospital_coded_outpatient <- plot_data |> 
+  filter(visit_week_type == "Outpatient visit") |> 
+  ggplot(aes(x = hospital_coded, y = yes_prop, fill = age_group)) + 
+  geom_col(stat = "identity", position = position_dodge(width = 0.75), width = 0.75)+
+  geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper), position = position_dodge(width = 0.75), width = 0.5) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1), breaks = c(0, 0.25, 0.5, 0.75, 1), expand = c(0,0))+
+  scale_fill_manual(values = c("grey80", "grey60", "grey40", "grey20", "grey10"))+
+  labs(y = "Visits (%) with HC",
+       x = "Hospital",
+       title = "Outpatient visit",
+       fill = "Age group (years)")+
+  theme_minimal()+
+  theme(panel.grid.major.x = element_blank(),
+        axis.text = element_text(color = "black", size = 8),
+        axis.title = element_text(color = "black", size = 8),
+        title = element_text(color = "black", size = 8, face = "bold"))
+
+plot_head_by_hospital_coded_outpatient
+
+plot_head_by_hospital_coded_ER <- plot_data |> 
+  filter(visit_week_type == "ER visit") |> 
+  ggplot(aes(x = hospital_coded, y = yes_prop, fill = age_group)) + 
+  geom_col(stat = "identity", position = position_dodge(width = 0.75), width = 0.75)+
+  geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper), position = position_dodge(width = 0.75), width = 0.5) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1), breaks = c(0, 0.25, 0.5, 0.75, 1), expand = c(0,0))+
+  scale_fill_manual(values = c("grey80", "grey60", "grey40", "grey20", "grey10"))+
+  labs(y = "Visits (%) with HC",
+       x = "Hospital",
+       title = "Emergency visit",
+       fill = "Age group (years)")+
+  theme_minimal()+
+  theme(panel.grid.major.x = element_blank(),
+        axis.text = element_text(color = "black", size = 8),
+        axis.title = element_text(color = "black", size = 8),
+        title = element_text(color = "black", size = 8, face = "bold"))
+
+plot_head_by_hospital_coded_ER
+
+plot_head_by_hospital_coded_inpatient <- plot_data |> 
+  filter(visit_week_type == "Inpatient stay") |> 
+  ggplot(aes(x = hospital_coded, y = yes_prop, fill = age_group)) + 
+  geom_col(stat = "identity", position = position_dodge(width = 0.75), width = 0.75)+
+  geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper), position = position_dodge(width = 0.75), width = 0.5) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1), breaks = c(0, 0.25, 0.5, 0.75, 1), expand = c(0,0))+
+  scale_fill_manual(values = c("grey80", "grey60", "grey40", "grey20", "grey10"))+
+  labs(y = "Stays (%) with HC",
+       x = "Hospital",
+       title = "Inpatient stay",
+       fill = "Age group (years)")+
+  theme_minimal()+
+  theme(panel.grid.major.x = element_blank(),
+        axis.text = element_text(color = "black", size = 8),
+        axis.title = element_text(color = "black", size = 8),
+        title = element_text(color = "black", size = 8, face = "bold"))
+
+plot_head_by_hospital_coded_inpatient
+
+
+
+
+```
+
+
+BMI
+
+```{r}
+
+plot_data <- data_visit_week |>
+  mutate(bmi_measurement = case_when(number_bmi_measurements >= 1 ~ "yes",
+                                                TRUE ~ "no")) |>
+  select(hospital_coded, bmi_measurement, visit_week_type, age_group) |>
+  group_by(hospital_coded, visit_week_type, age_group) |>
+  count(bmi_measurement) |>
+  ungroup() |>
+  pivot_wider(names_from = bmi_measurement,
+              values_from = n,
+              values_fill = 0) |>
+  mutate(total = yes + no,
+         yes_prop = yes / total) |>
+  rowwise() |>
+  mutate(
+    ci = list(prop.test(yes, total)$conf.int),
+    ci_lower = ci[1],
+    ci_upper = ci[2]
+  ) |>
+  ungroup() |>
+  select(-ci)
+
+plot_bmi_by_hospital_coded_outpatient <- plot_data |> 
+  filter(visit_week_type == "Outpatient visit") |> 
+  ggplot(aes(x = hospital_coded, y = yes_prop, fill = age_group)) + 
+  geom_col(stat = "identity", position = position_dodge(width = 0.75), width = 0.75)+
+  geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper), position = position_dodge(width = 0.75), width = 0.5) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1), breaks = c(0, 0.25, 0.5, 0.75, 1), expand = c(0,0))+
+  scale_fill_manual(values = c("grey80", "grey60", "grey40", "grey20", "grey10"))+
+  labs(y = "Visits (%) with BMI",
+       x = "Hospital",
+       title = "Outpatient visit",
+       fill = "Age group (years)")+
+  theme_minimal()+
+  theme(panel.grid.major.x = element_blank(),
+        axis.text = element_text(color = "black", size = 8),
+        axis.title = element_text(color = "black", size = 8),
+        title = element_text(color = "black", size = 8, face = "bold"))
+
+plot_bmi_by_hospital_coded_outpatient
+
+plot_bmi_by_hospital_coded_ER <- plot_data |> 
+  filter(visit_week_type == "ER visit") |> 
+  ggplot(aes(x = hospital_coded, y = yes_prop, fill = age_group)) + 
+  geom_col(stat = "identity", position = position_dodge(width = 0.75), width = 0.75)+
+  geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper), position = position_dodge(width = 0.75), width = 0.5) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1), breaks = c(0, 0.25, 0.5, 0.75, 1), expand = c(0,0))+
+  scale_fill_manual(values = c("grey80", "grey60", "grey40", "grey20", "grey10"))+
+  labs(y = "Visits (%) with BMI",
+       x = "Hospital",
+       title = "Emergency visit",
+       fill = "Age group (years)")+
+  theme_minimal()+
+  theme(panel.grid.major.x = element_blank(),
+        axis.text = element_text(color = "black", size = 8),
+        axis.title = element_text(color = "black", size = 8),
+        title = element_text(color = "black", size = 8, face = "bold"))
+
+plot_bmi_by_hospital_coded_ER
+
+plot_bmi_by_hospital_coded_inpatient <- plot_data |> 
+  filter(visit_week_type == "Inpatient stay") |> 
+  ggplot(aes(x = hospital_coded, y = yes_prop, fill = age_group)) + 
+  geom_col(stat = "identity", position = position_dodge(width = 0.75), width = 0.75)+
+  geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper), position = position_dodge(width = 0.75), width = 0.5) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1), breaks = c(0, 0.25, 0.5, 0.75, 1), expand = c(0,0))+
+  scale_fill_manual(values = c("grey80", "grey60", "grey40", "grey20", "grey10"))+
+  labs(y = "Stays (%) with BMI",
+       x = "Hospital",
+       title = "Inpatient stay",
+       fill = "Age group (years)")+
+  theme_minimal()+
+  theme(panel.grid.major.x = element_blank(),
+        axis.text = element_text(color = "black", size = 8),
+        axis.title = element_text(color = "black", size = 8),
+        title = element_text(color = "black", size = 8, face = "bold"),
+        legend.position = "bottom",
+        legend.key.height = unit(0.5, "cm"),
+        legend.key.width = unit(0.25, "cm"))
+
+plot_bmi_by_hospital_coded_inpatient
+
+```
+
+
+Combined
+
+```{r}
+
+plot_head_availability_per_visit_by_hospital_coded <- plot_grid(plotlist = c(plot_head_by_hospital_coded_outpatient + theme(legend.position = "None"),
+                                                                    plot_head_by_hospital_coded_ER + theme(legend.position = "None"),
+                                                                    plot_head_by_hospital_coded_inpatient + theme(legend.position = "None")),
+                                                       ncol = 1)
+
+plot_bmi_availability_per_visit_by_hospital_coded <- plot_grid(plotlist = c(plot_bmi_by_hospital_coded_outpatient + theme(legend.position = "None"),
+                                                                    plot_bmi_by_hospital_coded_ER + theme(legend.position = "None"),
+                                                                    plot_bmi_by_hospital_coded_inpatient + theme(legend.position = "None")),
+                                                       ncol = 1)
+
+plot_HC_bmi_availability_per_visit_by_hospital_coded <- plot_grid(plotlist = c(plot_head_availability_per_visit_by_hospital_coded + theme(plot.margin = margin(t = 1, r = 0, b = 0, l = 0, unit = "cm")),
+                                                                    plot_bmi_availability_per_visit_by_hospital_coded+ theme(plot.margin = margin(t = 1, r = 0, b = 0, l = 0, unit = "cm"))),
+                                                       ncol = 2,
+                                                       labels = c("Head circumference", "Body mass index"),
+                                                       label_x = 0.5,
+                                                       hjust = 0.5)
+
+plot_HC_bmi_availability_per_visit_by_hospital_coded
+
+get_legend2 <- function(a.gplot){
+  if (!gtable::is.gtable(a.gplot))
+    a.gplot <- ggplotGrob(a.gplot)
+  leg <- which(sapply(a.gplot$grobs, function(x) x$name) == "guide-box")
+  a.gplot$grobs[[leg]]
+}
+
+plot_legend <- get_legend2(plot_bmi_by_hospital_coded_inpatient + theme(legend.position = "bottom",
+                                                                           legend.title.position ="top",
+                                                                           legend.title = element_text(hjust = 0.5)))
+
+plot_HC_bmi_availability_per_visit_by_hospital_coded_with_legend <- plot_grid(plotlist = list(plot_HC_bmi_availability_per_visit_by_hospital_coded,
+                                                                              plot_legend),
+                                                                 ncol = 1,
+                                                                 rel_heights = c(1, 0.1))
+
+plot_HC_bmi_availability_per_visit_by_hospital_coded_with_legend
+
+ggsave(plot_HC_bmi_availability_per_visit_by_hospital_coded_with_legend, filename = here("output", "figures", "plot_HC_bmi_availability_per_visit_by_hospital_coded_with_legend.svg"), width = 18, height = 22, units = "cm")
+
+
+```
+
+
+## Aim 2: Quality
+
+
+### eTable : Growthclenr output
+
+```{r}
+
+data_height_original |> 
+  select(gcr_result) |> 
+  tbl_summary(statistic = all_categorical() ~ "{n} ({p})",
+              missing = "ifany",
+              missing_stat = "{N_miss} ({p_miss})",
+              label = list(result = "Quality of heights"),
+              digits = everything() ~ 0)
+
+
+data_weight_original |> 
+  select(gcr_result) |> 
+  tbl_summary(statistic = all_categorical() ~ "{n} ({p})",
+              missing = "ifany",
+              missing_stat = "{N_miss} ({p_miss})",
+              label = list(result = "Quality of weights"),
+              digits = everything() ~ 0)
+
+```
+
+### eTable: manual result
+
+```{r}
+
+data_height_original |> 
+  select(manual_result_fct) |> 
+  tbl_summary(statistic = all_categorical() ~ "{n} ({p})",
+              missing = "ifany",
+              missing_stat = "{N_miss} ({p_miss})",
+              label = list(result = "Quality of heights"),
+              digits = everything() ~ 0)
+
+
+data_weight_original |> 
+  select(manual_result_fct) |> 
+  tbl_summary(statistic = all_categorical() ~ "{n} ({p})",
+              missing = "ifany",
+              missing_stat = "{N_miss} ({p_miss})",
+              label = list(result = "Quality of weights"),
+              digits = everything() ~ 0)
+
+```
+
+
+### eTable: Quality
+
+```{r}
+
+data_height_original |> 
+  select(combined_result_fct) |> 
+  tbl_summary(statistic = all_categorical() ~ "{n} ({p})",
+              missing = "ifany",
+              missing_stat = "{N_miss} ({p_miss})",
+              label = list(result = "Quality of heights"),
+              digits = everything() ~ 0)
+
+
+data_weight_original |> 
+  select(combined_result_fct) |> 
+  tbl_summary(statistic = all_categorical() ~ "{n} ({p})",
+              missing = "ifany",
+              missing_stat = "{N_miss} ({p_miss})",
+              label = list(result = "Quality of weights"),
+              digits = everything() ~ 0)
+
+
+data_head |> 
+  select(manual_result_fct) |> 
+  tbl_summary(statistic = all_categorical() ~ "{n} ({p})",
+              missing = "ifany",
+              missing_stat = "{N_miss} ({p_miss})",
+              label = list(result = "Quality of weights"),
+              digits = everything() ~ 0)
+
+
+data_bmi |> 
+  select(combined_result_fct) |> 
+  tbl_summary(statistic = all_categorical() ~ "{n} ({p})",
+              missing = "ifany",
+              missing_stat = "{N_miss} ({p_miss})",
+              label = list(result = "Quality of weights"),
+              digits = everything() ~ 0)
+
+```
+
+
+
+### Figure 1: Sankey-plot of height and weight quality
+
+
+```{r}
+
+data_sankey_height <- data_height_original |> 
+  mutate(manual_result_fct = factor(case_when(
+    manual_result_fct == "Include - No error" ~ "No error",
+    manual_result_fct == "Include - Swapped-Recoding-Include-as-Weight" ~ "Corrected error",
+    manual_result_fct == "Include - Corrected unit error" ~ "Corrected error",
+    manual_result_fct == "Include - Corrected decimal point error" ~ "Corrected error",
+    manual_result_fct == "Duplicate - Carried forward" ~ "Duplicate",
+    manual_result_fct == "Duplicate - Same day" ~ "Duplicate",
+    manual_result_fct == "Exclude - Z-score" ~ "Biologically implausible outlier",
+    manual_result_fct == "Missing - Negative age" ~ "Invalid",
+    manual_result_fct == "Missing - Zero or negative recording" ~ "Invalid"),
+    levels = c("Invalid", "Biologically implausible outlier", "Duplicate", "Corrected error", "No error"))) %>%
+  mutate(growthcleanr_result_fct = factor(case_when(
+    growthcleanr_result_fct == "Include - No error" ~ "No error",
+    growthcleanr_result_fct == "Include - Corrected swapped measurements" ~ "Corrected error",
+    growthcleanr_result_fct == "Duplicate - Carried forward" ~ "Duplicate",
+    growthcleanr_result_fct == "Duplicate - Same day" ~ "Duplicate",
+    growthcleanr_result_fct == "Exclude - Single outlier" ~ "Biologically implausible outlier",
+    growthcleanr_result_fct == "Exclude - Longitudinal outlier" ~ "Biologically implausible outlier",
+    growthcleanr_result_fct == "Missing" ~ "Invalid"
+  ), levels = c("Invalid", "Biologically implausible outlier", "Duplicate", "Corrected error", "No error"))) %>%
+  mutate(combined_result_fct = factor(case_when(
+    combined_result_fct == "Include - No-Error" ~ "No error",
+    combined_result_fct == "Include - Swapped-Recoding-Include-as-Weight" ~ "Corrected error",
+    combined_result_fct == "Include - Corrected-Unit-Error" ~ "Corrected error",
+    combined_result_fct == "Include - Corrected-Decimal-Error" ~ "Corrected error",
+    combined_result_fct == "Carried-Forward" ~ "Duplicate",
+    combined_result_fct == "Same-Day" ~ "Duplicate",
+    combined_result_fct == "Exclude - Single-Outlier" ~ "Biologically implausible outlier",
+    combined_result_fct == "Exclude - Longitudinal-Outlier" ~ "Biologically implausible outlier",
+    combined_result_fct == "Exclude - Z-Score" ~ "Biologically implausible outlier",
+    combined_result_fct == "Missing - Age" ~ "Invalid",
+    combined_result_fct == "Missing - Recording" ~ "Invalid"
+  ), levels = c("Invalid", "Biologically implausible outlier", "Duplicate", "Corrected error", "No error"))) |> 
+  select(height_id, manual_result_fct, growthcleanr_result_fct, combined_result_fct) |> 
+  count(manual_result_fct, growthcleanr_result_fct, combined_result_fct)
+
+data_sankey_height <- data_sankey_height |> 
+  pivot_stages_longer(stages_from = c("manual_result_fct",  "combined_result_fct", "growthcleanr_result_fct"),
+                      values_from = "n") |> 
+  mutate(node = factor(node, levels = c("Invalid", "Biologically implausible outlier", "Duplicate", "Corrected error", "No error")),
+         stage = factor(stage, levels = c("manual_result_fct",  "combined_result_fct", "growthcleanr_result_fct"),
+                        labels = c("Own algorithm", "Combined", "Growthcleanr")))
+
+v_space = round(data_height_original |> nrow()/12)
+
+pos <- position_sankey(split_nodes = FALSE, align = "top",
+                       width = 0.6, v_space = v_space, order = "as_is")
+
+node_labels <- data_sankey_height %>%
+  filter((stage == "Own algorithm" & connector == "from") | (stage == "Combined" & connector == "from") | (stage == "Growthcleanr" & connector == "to")) |> 
+  group_by(stage, node) %>%
+  summarize(n = sum(n), .groups = "drop") %>%
+  ungroup() |>  
+  group_by(stage) |> 
+  arrange(node) |> 
+  mutate(sum = sum(n),
+         prop = n/sum,
+         label = paste0(format(n, big.mark = ",", scientific = FALSE), " (", ifelse(round(prop*100)>=1, round(prop*100), "<1"), "%)"),
+         y = cumsum(n) + v_space * (4-(n()-row_number())) - n/2)
+
+data_sankey_height <- data_sankey_height |> 
+  left_join(node_labels |> select(stage, node, y, label), by = c("stage", "node"))
+
+data_sankey_height <- data_sankey_height %>%
+  mutate(
+    edge_color = case_when(
+      stage == "Combined" & connector == "to"  ~ node,      # coming from left → use left node
+      stage == "Combined" & connector == "from" ~ node,     # going to right → use right node
+      connector == "from" ~ node,
+      TRUE ~ node
+    )
+  ) %>%
+  group_by(edge_id) %>%
+  mutate(
+    edge_color = case_when(
+      stage == "Combined" & connector == "to"   ~ node[connector == "from"], # from left
+      stage == "Combined" & connector == "from" ~ node[connector == "to"],   # from right
+      connector == "from" ~ node,
+      TRUE ~ node
+    )
+  ) %>%
+  ungroup()
+
+
+
+plot_sankey_height <- data_sankey_height |> 
+  ggplot(aes(x = stage, y = n, group = node, connector = connector, edge_id = edge_id)) +
+  geom_sankeyedge(position = pos, aes(fill = edge_color, color = edge_color)) +
+  geom_sankeynode(position = pos, aes(fill = node, color = node)) +
+  geom_label(aes(x = stage, y = y, label = label),
+            fill="white", color = "black", size = 3.5) +
+  scale_x_discrete(position = "top", expand = c(0, 0), labels = c("Self-developed\nalgorithm", "Combined\nalgorithms", "Growthcleanr\nalgorithm")) +
+  scale_fill_manual(name = "Result",
+                    values = c(
+    "No error" = "#0080a4",
+    "Corrected error" = "#36b5b6",
+    "Duplicate" = "#c2b600",
+    "Biologically implausible outlier" = "#e6002e",
+    "Invalid" = "black"
+  )) +
+  scale_colour_manual(values = c(
+    "No error" = "#0080a4",
+    "Corrected error" = "#36b5b6",
+    "Duplicate" = "#c2b600",
+    "Biologically implausible outlier" = "#e6002e",
+    "Invalid" = "black"
+  ), guide = "none") +
+  theme_void()+
+  theme(
+    axis.text.x = element_text(size = 11, margin = margin(b = 0)),
+    legend.position = "None",
+    plot.margin = unit(c(b = 1, t = 1, r = 0.5, l = 0.5), "cm")
+  )
+
+plot_sankey_height
+
+```
+
+```{r}
+
+data_sankey_weight <- data_weight_original |> 
+  mutate(manual_result_fct = factor(case_when(
+    manual_result_fct == "Include - No error" ~ "No error",
+    manual_result_fct == "Include - Swapped-Recoding-Include-as-Height" ~ "Corrected error",
+    manual_result_fct == "Include - Corrected unit error" ~ "Corrected error",
+    manual_result_fct == "Include - Corrected decimal point error" ~ "Corrected error",
+    manual_result_fct == "Duplicate - Carried forward" ~ "Duplicate",
+    manual_result_fct == "Duplicate - Same day" ~ "Duplicate",
+    manual_result_fct == "Exclude - Z-score" ~ "Biologically implausible outlier",
+    manual_result_fct == "Missing - Negative age" ~ "Invalid",
+    manual_result_fct == "Missing - Zero or negative recording" ~ "Invalid"),
+    levels = c("Invalid", "Biologically implausible outlier", "Duplicate", "Corrected error", "No error"))) %>%
+  mutate(growthcleanr_result_fct = factor(case_when(
+    growthcleanr_result_fct == "Include - No error" ~ "No error",
+    growthcleanr_result_fct == "Include - Corrected swapped measurements" ~ "Corrected error",
+    growthcleanr_result_fct == "Duplicate - Carried forward" ~ "Duplicate",
+    growthcleanr_result_fct == "Duplicate - Same day" ~ "Duplicate",
+    growthcleanr_result_fct == "Exclude - Single outlier" ~ "Biologically implausible outlier",
+    growthcleanr_result_fct == "Exclude - Longitudinal outlier" ~ "Biologically implausible outlier",
+    growthcleanr_result_fct == "Missing" ~ "Invalid"
+  ), levels = c("Invalid", "Biologically implausible outlier", "Duplicate", "Corrected error", "No error"))) %>%
+  mutate(combined_result_fct = factor(case_when(
+    combined_result_fct == "Include - No-Error" ~ "No error",
+    combined_result_fct == "Include - Corrected-Unit-Error" ~ "Corrected error",
+    combined_result_fct == "Include - Corrected-Decimal-Error" ~ "Corrected error",
+    combined_result_fct == "Include - Swapped-Recoding-Include-as-Height" ~ "Corrected error",
+    combined_result_fct == "Carried-Forward" ~ "Duplicate",
+    combined_result_fct == "Same-Day" ~ "Duplicate",
+    combined_result_fct == "Exclude - Single-Outlier" ~ "Biologically implausible outlier",
+    combined_result_fct == "Exclude - Longitudinal-Outlier" ~ "Biologically implausible outlier",
+    combined_result_fct == "Exclude - Z-Score" ~ "Biologically implausible outlier",
+    combined_result_fct == "Missing - Age" ~ "Invalid",
+    combined_result_fct == "Missing - Recording" ~ "Invalid"
+  ), levels = c("Invalid", "Biologically implausible outlier", "Duplicate", "Corrected error", "No error"))) |> 
+  select(weight_id, manual_result_fct, growthcleanr_result_fct, combined_result_fct) |> 
+  count(manual_result_fct, growthcleanr_result_fct, combined_result_fct)
+
+data_sankey_weight <- data_sankey_weight |> 
+  pivot_stages_longer(stages_from = c("manual_result_fct",  "combined_result_fct", "growthcleanr_result_fct"),
+                      values_from = "n") |> 
+  mutate(node = factor(node, levels = c("Invalid", "Biologically implausible outlier", "Duplicate", "Corrected error", "No error")),
+         stage = factor(stage, levels = c("manual_result_fct",  "combined_result_fct", "growthcleanr_result_fct"),
+                        labels = c("Own algorithm", "Combined", "Growthcleanr")))
+
+v_space = round(data_weight_original |> nrow()/12)
+
+pos <- position_sankey(split_nodes = FALSE, align = "top",
+                       width = 0.6, v_space = v_space, order = "as_is")
+
+node_labels <- data_sankey_weight %>%
+  filter((stage == "Own algorithm" & connector == "from") | (stage == "Combined" & connector == "from") | (stage == "Growthcleanr" & connector == "to")) |> 
+  group_by(stage, node) %>%
+  summarize(n = sum(n), .groups = "drop") %>%
+  ungroup() |>  
+  group_by(stage) |> 
+  arrange(node) |> 
+  mutate(sum = sum(n),
+         prop = n/sum,
+         label = paste0(format(n, big.mark = ",", scientific = FALSE), " (", ifelse(round(prop*100)>=1, round(prop*100), "<1"), "%)"),
+         y = cumsum(n) + v_space * (4-(n()-row_number())) - n/2)
+
+data_sankey_weight <- data_sankey_weight |> 
+  left_join(node_labels |> select(stage, node, y, label), by = c("stage", "node"))
+
+data_sankey_weight <- data_sankey_weight %>%
+  mutate(
+    edge_color = case_when(
+      stage == "Combined" & connector == "to"  ~ node,      # coming from left → use left node
+      stage == "Combined" & connector == "from" ~ node,     # going to right → use right node
+      connector == "from" ~ node,
+      TRUE ~ node
+    )
+  ) %>%
+  group_by(edge_id) %>%
+  mutate(
+    edge_color = case_when(
+      stage == "Combined" & connector == "to"   ~ node[connector == "from"], # from left
+      stage == "Combined" & connector == "from" ~ node[connector == "to"],   # from right
+      connector == "from" ~ node,
+      TRUE ~ node
+    )
+  ) %>%
+  ungroup()
+
+
+
+plot_sankey_weight <- data_sankey_weight |> 
+  ggplot(aes(x = stage, y = n, group = node, connector = connector, edge_id = edge_id)) +
+  geom_sankeyedge(position = pos, aes(fill = edge_color, color = edge_color)) +
+  geom_sankeynode(position = pos, aes(fill = node, color = node)) +
+  geom_label(aes(x = stage, y = y, label = label),
+            fill="white", color = "black", size = 3.5) +
+  scale_x_discrete(position = "top", expand = c(0, 0), labels = c("Self-developed\nalgorithm", "Combined\nalgorithms", "Growthcleanr\nalgorithm")) +
+  scale_fill_manual(name = "Result",
+                    values = c(
+    "No error" = "#0080a4",
+    "Corrected error" = "#36b5b6",
+    "Duplicate" = "#c2b600",
+    "Biologically implausible outlier" = "#e6002e",
+    "Invalid" = "black"
+  )) +
+  scale_colour_manual(values = c(
+    "No error" = "#0080a4",
+    "Corrected error" = "#36b5b6",
+    "Duplicate" = "#c2b600",
+    "Biologically implausible outlier" = "#e6002e",
+    "Invalid" = "black"
+  ), guide = "none") +
+  theme_void()+
+  theme(
+    axis.text.x = element_text(size = 11, margin = margin(b = 0)),
+    legend.title = element_text(size = 11),
+    legend.text = element_text(size = 11),
+    legend.position = "bottom",
+    plot.margin = unit(c(b = 1, t = 1, r = 0.5, l = 0.5), "cm")
+  )
+
+plot_sankey_weight
+
+
+
+plot_legend <- get_legend2(plot_sankey_weight + theme(plot.margin = unit(c(b = 0, t = 0, r = 10, l = 10), "pt"),
+                                                      legend.title = element_blank()))
+
+plot_sankey <- plot_grid(plot_sankey_height,
+                         plot_sankey_weight + theme(legend.position = "None"),
+                         plot_legend,
+                         ncol=1,
+                         rel_heights = c(1,1,0.1),
+                         align = "h",
+                         axis = "l",
+                         labels = c("Height", "Weight"),
+                         label_x = c(-0.02, -0.02))
+
+ggsave(plot_sankey, filename = here("output", "figures", "plot_sankey.svg"), width = 18, height = 22, units = "cm")
+
+```
+
+### Figure 2: Included vs. excluded height, weight, BMI over age
+
+Height
+
+```{r}
+
+plot_height_before_cleaning <- data_height_original |> 
+  ggplot(aes(x = age_years_height, y = original_height_cm))+
+  geom_point(alpha = 0.2, color = "black", fill = "black")+
+  scale_x_continuous(limits = c(0, 20), expand = c(0,0))+
+  scale_y_continuous(limits = c(0, 220), expand = c(0,0))+
+  ggtitle("Original dataset")+
+  xlab("Age (years)")+
+  ylab("Height (cm)")+
+  theme_minimal()+
+  theme(legend.position = "None",
+        plot.title = element_text(size = 10, color = "black", face = "bold", hjust = 0.5),
+        axis.text = element_text(size=10, color = "black"),
+        axis.title = element_text(size=10, color = "black"),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 10, color = "black"),
+        plot.margin = unit(c(b = 0, t = 1, r = 0.5, l = 0.5), "cm"))
+
+plot_height_before_cleaning
+
+plot_height_during_cleaning <- data_height_clean |> 
+  mutate(include = case_when(combined_result == "Include - No-Error" ~ "Included",
+                             combined_result == "Include - Corrected-Unit-Error" ~ "Included",
+                             combined_result == "Include - Corrected-Decimal-Error" ~ "Included",
+                             combined_result == "Include - Swapped-Recoding-Include-as-Height" ~ "Included",
+                             TRUE ~ "Excluded")) |> 
+  ggplot(aes(x = age_years_height, y = height_cm, color = include))+
+  geom_point(alpha = 0.2)+
+  scale_color_manual(values = c("#e6002e", "#0080a4"))+
+  scale_x_continuous(limits = c(0, 20), expand = c(0,0))+
+  scale_y_continuous(limits = c(0, 220), expand = c(0,0))+
+  labs(color = "Height quality")+
+  ggtitle("Data cleaning")+
+  xlab("Age (years)")+
+  ylab("Height (cm)")+
+  theme_minimal()+
+  theme(legend.position = "bottom",
+        plot.title = element_text(size = 10, color = "black", face = "bold", hjust = 0.5),
+        axis.text = element_text(size=10, color = "black"),
+        axis.title = element_text(size=10, color = "black"),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 10, color = "black"),
+        plot.margin = unit(c(b = 0, t = 1, r = 0.5, l = 0.5), "cm"))
+
+plot_height_during_cleaning
+
+plot_height_after_cleaning <- data_height_clean |> 
+  mutate(include = case_when(combined_result == "Include - No-Error" ~ "Included",
+                             combined_result == "Include - Corrected-Unit-Error" ~ "Included",
+                             combined_result == "Include - Corrected-Decimal-Error" ~ "Included",
+                             combined_result == "Include - Swapped-Recoding-Include-as-Height" ~ "Included",
+                             TRUE ~ "Excluded")) |> 
+  filter(include == "Included") |> 
+  ggplot(aes(x = age_years_height, y = height_cm, color = include))+
+  geom_point(alpha = 0.2)+
+  scale_color_manual(labels = c("Include"), values = c("#0080a4"))+
+  scale_x_continuous(limits = c(0, 20), expand = c(0,0))+
+  scale_y_continuous(limits = c(0, 220), expand = c(0,0))+
+  labs(color = "Height quality")+
+  ggtitle("Cleaned dataset")+
+  xlab("Age (years)")+
+  ylab("Height (cm)")+
+  theme_minimal()+
+  theme(legend.position = "bottom",
+        plot.title = element_text(size = 10, color = "black", face = "bold", hjust = 0.5),
+        axis.text = element_text(size=10, color = "black"),
+        axis.title = element_text(size=10, color = "black"),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 10, color = "black"),
+        plot.margin = unit(c(b = 0, t = 1, r = 0.5, l = 0.5), "cm"))
+
+plot_height_quality <- plot_grid(plot_height_before_cleaning + theme(legend.position = "None"),
+                                 plot_height_during_cleaning + theme(legend.position = "None"),
+                                 plot_height_after_cleaning + theme(legend.position = "None"),
+                                 ncol = 3,
+                                 align = "hv")
+
+plot_height_quality
+
+```
+
+weight
+
+```{r}
+
+plot_weight_before_cleaning <- data_weight_original |> 
+  ggplot(aes(x = age_years_weight, y = original_weight_kg))+
+  geom_point(alpha = 0.2, color = "black", fill = "black")+
+  scale_x_continuous(limits = c(0, 20), expand = c(0,0))+
+  scale_y_continuous(limits = c(0, 250), expand = c(0,0))+
+  ggtitle(" ")+
+  xlab("Age (years)")+
+  ylab("Weight (kg)")+
+  theme_minimal()+
+  theme(legend.position = "None",
+        plot.title = element_text(size = 10, color = "black", face = "bold", hjust = 0.5),
+        axis.text = element_text(size=10, color = "black"),
+        axis.title = element_text(size=10, color = "black"),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 10, color = "black"),
+        plot.margin = unit(c(b = 0, t = 0, r = 0.5, l = 0.5), "cm"))
+
+plot_weight_during_cleaning <- data_weight_clean |> 
+  mutate(include = case_when(combined_result == "Include - No-Error" ~ "Included",
+                             combined_result == "Include - Corrected-Unit-Error" ~ "Included",
+                             combined_result == "Include - Corrected-Decimal-Error" ~ "Included",
+                             combined_result == "Include - Swapped-Recoding-Include-as-Weight" ~ "Included",
+                             TRUE ~ "Excluded")) |> 
+  ggplot(aes(x = age_years_weight, y = weight_kg, color = include))+
+  geom_point(alpha = 0.2)+
+  scale_color_manual(values = c("#e6002e", "#0080a4"))+
+  scale_x_continuous(limits = c(0, 20), expand = c(0,0))+
+  scale_y_continuous(limits = c(0, 250), expand = c(0,0))+
+  labs(color = "weight quality")+
+  ggtitle(" ")+
+  xlab("Age (years)")+
+  ylab("Weight (kg)")+
+  theme_minimal()+
+  theme(legend.position = "bottom",
+        plot.title = element_text(size = 10, color = "black", face = "bold", hjust = 0.5),
+        axis.text = element_text(size=10, color = "black"),
+        axis.title = element_text(size=10, color = "black"),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 10, color = "black"),
+        plot.margin = unit(c(b = 0, t = 0, r = 0.5, l = 0.5), "cm"))
+
+plot_weight_during_cleaning
+
+plot_weight_after_cleaning <- data_weight_clean |> 
+  mutate(include = case_when(combined_result == "Include - No-Error" ~ "Included",
+                             combined_result == "Include - Corrected-Unit-Error" ~ "Included",
+                             combined_result == "Include - Corrected-Decimal-Error" ~ "Included",
+                             combined_result == "Include - Swapped-Recoding-Include-as-Weight" ~ "Included",
+                             TRUE ~ "Excluded")) |> 
+  filter(include == "Included") |> 
+  ggplot(aes(x = age_years_weight, y = weight_kg, color = include))+
+  geom_point(alpha = 0.2)+
+  scale_color_manual(labels = c("Include"), values = c("#0080a4"))+
+  scale_x_continuous(limits = c(0, 20), expand = c(0,0))+
+  scale_y_continuous(limits = c(0, 250), expand = c(0,0))+
+  labs(color = "Weight quality")+
+  ggtitle(" ")+
+  xlab("Age (years)")+
+  ylab("Weight (kg)")+
+  theme_minimal()+
+  theme(legend.position = "None",
+        plot.title = element_text(size = 10, color = "black", face = "bold", hjust = 0.5),
+        axis.text = element_text(size=10, color = "black"),
+        axis.title = element_text(size=10, color = "black"),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 10, color = "black"),
+        plot.margin = unit(c(b = 0, t = 0, r = 0.5, l = 0.5), "cm"))
+
+plot_weight_quality <- plot_grid(plot_weight_before_cleaning + theme(legend.position = "None"),
+                                 plot_weight_during_cleaning + theme(legend.position = "None"),
+                                 plot_weight_after_cleaning + theme(legend.position = "None"),
+                                 ncol = 3,
+                                 align = "hv")
+
+plot_weight_quality
+
+```
+
+
+```{r}
+plot_for_legend <- data_weight_clean |> 
+  head(3) |> 
+  mutate(color = case_when(row_number() == 1 ~ "Original recording",
+                           row_number() == 2 ~ "Excluded recording",
+                           row_number() == 3 ~ "Included recording")) |> 
+  ggplot(aes(x = age_years_weight, y = weight_kg, color = color))+
+  geom_point()+
+  scale_color_manual(labels = c("Original recording", "Excluded recording", "Included recording"), values = c("black", "#e6002e", "#0080a4"))+
+  scale_x_continuous(limits = c(0, 20), expand = c(0,0))+
+  scale_y_continuous(limits = c(0, 250), expand = c(0,0))+
+  labs(color = "weight quality")+
+  ggtitle(" ")+
+  xlab("Age (years)")+
+  ylab("Weight (kg)")+
+  theme_minimal()+
+  theme(legend.position = "right",
+        plot.title = element_text(size = 10, color = "black", face = "bold", hjust = 0.5),
+        axis.text = element_text(size=10, color = "black"),
+        axis.title = element_text(size=10, color = "black"),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 10, color = "black"),
+        plot.margin = unit(c(b = 0, t = 0.5, r = 0.5, l = 0.5), "cm"))
+
+
+```
+
+
+```{r}
+get_legend2 <- function(a.gplot){
+  if (!gtable::is.gtable(a.gplot))
+    a.gplot <- ggplotGrob(a.gplot)
+  leg <- which(sapply(a.gplot$grobs, function(x) x$name) == "guide-box")
+  a.gplot$grobs[[leg]]
+}
+
+plot_legend <- get_legend2(plot_for_legend + theme(legend.box.background = element_rect(fill = 'white', colour = 'white'),
+                                                   plot.background = element_rect(fill = "white", colour = "white")))
+
+plot_quality_height_weight <- plot_grid(plot_height_before_cleaning + theme(legend.position = "None"),
+                                        plot_height_during_cleaning + theme(legend.position = "None"),
+                                        plot_height_after_cleaning + theme(legend.position = "None"),
+                                        plot_weight_before_cleaning + theme(legend.position = "None"),
+                                        plot_weight_during_cleaning + theme(legend.position = "None"),
+                                        plot_weight_after_cleaning + theme(legend.position = "None"),
+                          ncol = 3,
+                          align = "hv")
+
+plot_quality_height_weight_with_legend <- plot_grid(plot_quality_height_weight,
+                                                    plot_legend,
+                                                    ncol = 2,
+                                                    rel_widths = c(1,0.2))
+
+
+ggsave(plot_quality_height_weight_with_legend, filename = here("output", "figures", "plot_quality_height_weight_with_legend.png"), width = 26, height = 16, units = "cm", dpi = 600, bg = "white")
+
+```
+
+
+#### eFigure: included vs excluded HC and BMI
+
+
+
+Head circumference
+
+```{r}
+
+plot_head_before_cleaning <- data_head |> 
+  ggplot(aes(x = age_years_circumference, y = original_head_cm))+
+  geom_point(alpha = 0.2, color = "black", fill = "black")+
+  scale_x_continuous(limits = c(0, 20), expand = c(0,0))+
+  scale_y_continuous(limits = c(0, 65), expand = c(0,0))+
+  ggtitle("Original dataset")+
+  xlab("Age (years)")+
+  ylab("Head circumference (cm)")+
+  theme_minimal()+
+  theme(legend.position = "None",
+        plot.title = element_text(size = 10, color = "black", face = "bold", hjust = 0.5),
+        axis.text = element_text(size=10, color = "black"),
+        axis.title = element_text(size=10, color = "black"),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 10, color = "black"),
+        plot.margin = unit(c(b = 0, t = 1, r = 0.5, l = 0.5), "cm"))
+
+plot_head_during_cleaning <- data_head |> 
+  mutate(include = case_when(manual_result_fct == "Include - No error" ~ "Included",
+                             manual_result_fct == "Include - Corrected unit error" ~ "Included",
+                             manual_result_fct == "Include - Corrected decimal point error" ~ "Included",
+                             TRUE ~ "Excluded")) |> 
+  ggplot(aes(x = age_years_circumference, y = head_cm, color = include))+
+  geom_point(alpha = 0.2)+
+  scale_color_manual(labels = c("Exclude", "Include"), values = c("#e6002e", "#0080a4"))+
+  scale_x_continuous(limits = c(0, 20), expand = c(0,0))+
+  scale_y_continuous(limits = c(0, 65), expand = c(0,0))+
+  ggtitle("Data cleaning")+
+  xlab("Age (years)")+
+  ylab("Head circumference (cm)")+
+  theme_minimal()+
+  theme(legend.position = "None",
+        plot.title = element_text(size = 10, color = "black", face = "bold", hjust = 0.5),
+        axis.text = element_text(size=10, color = "black"),
+        axis.title = element_text(size=10, color = "black"),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 10, color = "black"),
+        plot.margin = unit(c(b = 0, t = 1, r = 0.5, l = 0.5), "cm"))
+
+plot_head_after_cleaning <- data_head |> 
+  mutate(include = case_when(manual_result_fct == "Include - No error" ~ "Included",
+                             manual_result_fct == "Include - Corrected unit error" ~ "Included",
+                             manual_result_fct == "Include - Corrected decimal point error" ~ "Included",
+                             TRUE ~ "Excluded")) |> 
+  filter(include == "Included") |> 
+  ggplot(aes(x = age_years_circumference, y = head_cm, color = include))+
+  geom_point(alpha = 0.2)+
+  scale_color_manual(labels = c("Include"), values = c( "#0080a4"))+
+  scale_x_continuous(limits = c(0, 20), expand = c(0,0))+
+  scale_y_continuous(limits = c(0, 65), expand = c(0,0))+
+  ggtitle("Cleaned dataset")+
+  xlab("Age (years)")+
+  ylab("Head circumference (cm)")+
+  theme_minimal()+
+  theme(legend.position = "None",
+        plot.title = element_text(size = 10, color = "black", face = "bold", hjust = 0.5),
+        axis.text = element_text(size=10, color = "black"),
+        axis.title = element_text(size=10, color = "black"),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 10, color = "black"),
+        plot.margin = unit(c(b = 0, t = 1, r = 0.5, l = 0.5), "cm"))
+
+plot_head_quality <- plot_grid(plot_head_before_cleaning + theme(legend.position = "None"),
+                               plot_head_during_cleaning + theme(legend.position = "None"),
+                               plot_head_after_cleaning + theme(legend.position = "None"),
+                                 ncol = 3,
+                                 align = "hv")
+
+plot_head_quality
+
+```
+
+BMI
+
+```{r}
+
+plot_bmi_before_cleaning <- data_bmi |>
+  ggplot(aes(x = age_years_bmi, y = bmi))+
+  geom_point(alpha = 0.2, color = "black", fill = "black")+
+  scale_x_continuous(limits = c(0, 20), expand = c(0,0))+
+  scale_y_continuous(limits = c(0, 65), expand = c(0,0))+
+  labs(y = bquote(Body~mass~index~(kg/m^2)),
+       x = "Age (years)")+
+  theme_minimal()+
+  theme(legend.position = "None",
+        plot.title = element_text(size = 10, color = "black", face = "bold", hjust = 0.5),
+        axis.text = element_text(size=10, color = "black"),
+        axis.title = element_text(size=10, color = "black"),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 10, color = "black"),
+        plot.margin = unit(c(b = 0, t = 1, r = 0.5, l = 0.5), "cm"))
+
+plot_bmi_during_cleaning <- data_bmi |>
+  mutate(include = case_when(combined_result_fct == "Include - No-Error" ~ "Included",
+                             combined_result_fct == "Include - Corrected-Unit-Error" ~ "Included",
+                             combined_result_fct == "Include - Corrected-Decimal-Error" ~ "Included",
+                             combined_result_fct == "Include - Corrected-Swapped-Measurements" ~ "Included",
+                             TRUE ~ "Excluded")) |> 
+  ggplot(aes(x = age_years_bmi, y = bmi, color = include))+
+  geom_point(alpha = 0.2)+
+  scale_color_manual(labels = c("Excluded", "Included"), values = c("#e6002e", "#0080a4"))+
+  scale_x_continuous(limits = c(0, 20), expand = c(0,0))+
+  scale_y_continuous(limits = c(0, 65), expand = c(0,0))+
+  labs(y = bquote(Body~mass~index~(kg/m^2)),
+       x = "Age (years)")+
+  theme_minimal()+
+  theme(legend.position = "None",
+        plot.title = element_text(size = 10, color = "black", face = "bold", hjust = 0.5),
+        axis.text = element_text(size=10, color = "black"),
+        axis.title = element_text(size=10, color = "black"),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 10, color = "black"),
+        plot.margin = unit(c(b = 0, t = 1, r = 0.5, l = 0.5), "cm"))
+
+plot_bmi_after_cleaning <- data_bmi |> 
+  mutate(include = case_when(combined_result_fct == "Include - No-Error" ~ "Included",
+                             combined_result_fct == "Include - Corrected-Unit-Error" ~ "Included",
+                             combined_result_fct == "Include - Corrected-Decimal-Error" ~ "Included",
+                             combined_result_fct == "Include - Corrected-Swapped-Measurements" ~ "Included",
+                             TRUE ~ "Excluded")) |> 
+  filter(include == "Included") |> 
+  ggplot(aes(x = age_years_bmi, y = bmi, color = include))+
+  geom_point(alpha = 0.2)+
+  scale_color_manual(labels = c("Included"), values = c( "#0080a4"))+
+  scale_x_continuous(limits = c(0, 20), expand = c(0,0))+
+  scale_y_continuous(limits = c(0, 65), expand = c(0,0))+
+  labs(y = bquote(Body~mass~index~(kg/m^2)),
+       x = "Age (years)")+
+  theme_minimal()+
+  theme(legend.position = "None",
+        plot.title = element_text(size = 10, color = "black", face = "bold", hjust = 0.5),
+        axis.text = element_text(size=10, color = "black"),
+        axis.title = element_text(size=10, color = "black"),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 10, color = "black"),
+        plot.margin = unit(c(b = 0, t = 1, r = 0.5, l = 0.5), "cm"))
+
+plot_bmi_quality <- plot_grid(plot_bmi_before_cleaning + theme(legend.position = "None"),
+                              plot_bmi_during_cleaning + theme(legend.position = "None"),
+                              plot_bmi_after_cleaning + theme(legend.position = "None"),
+                              ncol = 3,
+                              align = "hv")
+
+plot_bmi_quality
+
+```
+
+Combined plots
+
+```{r}
+
+plot_quality_HC_bmi <- plot_grid(plot_head_before_cleaning + theme(legend.position = "None"),
+                                        plot_head_during_cleaning + theme(legend.position = "None"),
+                                        plot_head_after_cleaning + theme(legend.position = "None"),
+                                        plot_bmi_before_cleaning + theme(legend.position = "None"),
+                                        plot_bmi_during_cleaning + theme(legend.position = "None"),
+                                        plot_bmi_after_cleaning + theme(legend.position = "None"),
+                          ncol = 3,
+                          align = "hv")
+
+plot_quality_HC_bmi_with_legend <- plot_grid(plot_quality_HC_bmi,
+                                                    plot_legend,
+                                                    ncol = 2,
+                                                    rel_widths = c(1,0.2))
+
+
+ggsave(plot_quality_HC_bmi_with_legend, filename = here("output", "figures", "plot_quality_HC_bmi_with_legend.png"), width = 26, height = 16, units = "cm", dpi = 600, bg = "white")
+
+
+```
+
+
